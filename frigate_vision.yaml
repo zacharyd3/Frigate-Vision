@@ -1,19 +1,21 @@
 blueprint:
-  name: FrigateVision - Beta
+  name: FrigateVision - Multi-Camera Priority
   description: >
     Watches multiple Frigate cameras with a configurable priority order.
     When events fire across cameras within a short collection window, the
     highest-priority camera wins LLM analysis. Lower-priority simultaneous
     detections are mentioned in the notification but not analyzed separately.
-    Supports LLM clip analysis, Android/iOS, cooldown, sublabels, and all
-    original FrigateVision features.
+    Supports reverse-proxied HA and Frigate URLs, LLM clip analysis,
+    Android/iOS, cooldown, sublabels, and all original FrigateVision features.
+    Zone priority override: if an event occurs in the configured high-priority
+    zone(s), that camera is promoted to the top regardless of camera list order.
   domain: automation
   input:
 
     cameras:
       name: Frigate Camera Entities (Priority Order)
       description: >
-        Select all cameras to monitor. Order matters — cameras listed first
+        Select all cameras to monitor. Order matters - cameras listed first
         have higher priority. If multiple cameras detect something within the
         collection window, the first camera in this list wins LLM analysis.
       selector:
@@ -59,7 +61,7 @@ blueprint:
       description: >
         How long to wait after the first event fires before picking the
         highest-priority camera. Events from multiple cameras within this
-        window are compared. 3–8 seconds is a good starting point.
+        window are compared. 3-8 seconds is a good starting point.
       default: 5
       selector:
         number:
@@ -77,6 +79,35 @@ blueprint:
           integration: mobile_app
           multiple: true
 
+    zone_priority:
+      name: Zone Priority Override
+      icon: mdi:map-marker-radius
+      collapsed: true
+      input:
+
+        priority_zones:
+          name: High-Priority Zone(s)
+          description: >
+            Enter one or more Frigate zone names (comma-separated, e.g. "front_door,driveway_entry").
+            If an event occurs in any of these zones it is promoted to the top of
+            the priority ranking, overriding the camera list order.
+            Zone names must match exactly what is configured in Frigate (case-insensitive).
+            Leave blank to disable zone priority override.
+          default: ""
+          selector:
+            text:
+              multiline: false
+              multiple: false
+
+        zone_priority_label:
+          name: Append Zone Label to Notification
+          description: >
+            When a zone override is in effect, add a note to the notification
+            indicating which zone triggered the priority boost.
+          default: true
+          selector:
+            boolean: {}
+
     notification_customization:
       name: Notification Customization
       icon: mdi:message-alert
@@ -90,14 +121,14 @@ blueprint:
             boolean: {}
 
         append:
-          name: Append "Camera"
+          name: Append Camera
           description: Add "Camera" to the end of camera names in notifications.
           default: false
           selector:
             boolean: {}
 
         expand:
-          name: Expand "Cam" → "Camera"
+          name: Expand Cam to Camera
           default: false
           selector:
             boolean: {}
@@ -228,6 +259,7 @@ blueprint:
       icon: mdi:cog
       collapsed: true
       input:
+
         sublabel:
           name: Include Sublabels
           default: true
@@ -235,16 +267,68 @@ blueprint:
             boolean: {}
 
         base_url:
-          name: External Base URL
-          default: https://your.ddns
+          name: External Home Assistant URL
+          description: >
+            Public-facing URL for Home Assistant. Used to build clip, snapshot,
+            and action links in notifications. If behind a reverse proxy with no
+            port (e.g. https://ha.yourdomain.com) enter just the domain and enable
+            "HA is Reverse Proxied" below. If connecting directly include the port
+            (e.g. https://your.ddns:8123).
+          default: https://your.ddns:8123
           selector:
             text: {}
 
+        ha_reverse_proxied:
+          name: Home Assistant is Reverse Proxied
+          description: >
+            Enable when HA is accessible without a port number via a reverse proxy.
+            ON = :8123 is never appended to any HA URL.
+            OFF = :8123 is always appended (direct connection).
+          default: false
+          selector:
+            boolean: {}
+
         local_url:
-          name: Internal Base URL
-          default: http://192.168.250.1
+          name: Internal Home Assistant URL
+          description: >
+            Local URL used by LLM Vision to fetch clips on your internal network.
+            If HA is also locally proxied without a port enter just the local
+            hostname (e.g. http://ha.local) and enable the toggle below.
+            If connecting directly include the port (e.g. http://192.168.1.10:8123).
+          default: http://192.168.250.1:8123
           selector:
             text: {}
+
+        local_ha_reverse_proxied:
+          name: Local HA Access is Also Reverse Proxied
+          description: >
+            Enable if your internal LLM Vision fetches go through a local reverse
+            proxy with no port. ON = :8123 not appended to local_url.
+            OFF = :8123 always appended to local_url.
+          default: false
+          selector:
+            boolean: {}
+
+        frigate_url:
+          name: External Frigate URL (optional)
+          description: >
+            Public-facing URL for the Frigate UI, used for the "Open Frigate"
+            action button. Set this when Frigate has its own subdomain
+            (e.g. https://frigate.yourdomain.com) or subpath. Leave blank to
+            auto-derive from the HA base_url above.
+          default: ""
+          selector:
+            text: {}
+
+        frigate_reverse_proxied:
+          name: Frigate is Reverse Proxied
+          description: >
+            Enable when Frigate is accessible without a port via a reverse proxy.
+            ON = :8971 never appended to Frigate URLs.
+            OFF = :8971 appended to base_url automatically when frigate_url is blank.
+          default: false
+          selector:
+            boolean: {}
 
         debug:
           name: Debugging
@@ -266,8 +350,9 @@ blueprint:
   source_url: https://github.com/zacharyd3/Frigate-Vision/blob/main/frigate_vision.yaml
 
 # ---------------------------------------------------------------------------
-# Trigger: watch MQTT for any new Frigate event. We'll filter by camera list
-# inside the action block so one automation instance handles all cameras.
+# Trigger: fires on any Frigate event. Label and camera filtering happens
+# in the condition block. Single mode ensures only one run at a time across
+# all cameras, so a busy camera can't queue-bomb the automation.
 # ---------------------------------------------------------------------------
 trigger:
   - trigger: mqtt
@@ -279,7 +364,7 @@ trigger:
 # ---------------------------------------------------------------------------
 actions:
 
-  # ── Step 1: resolve inputs into variables ──────────────────────────────
+  # ── Step 1: resolve all inputs into variables ───────────────────────────
   - variables:
       input_cameras: !input cameras
       input_labels: !input labels
@@ -309,38 +394,59 @@ actions:
       input_helper: !input helper
       input_debug: !input debug
       input_base_url: !input base_url
+      input_ha_reverse_proxied: !input ha_reverse_proxied
       input_local_url: !input local_url
+      input_local_ha_reverse_proxied: !input local_ha_reverse_proxied
+      input_frigate_url: !input frigate_url
+      input_frigate_reverse_proxied: !input frigate_reverse_proxied
+      input_priority_zones: !input priority_zones
+      input_zone_priority_label: !input zone_priority_label
       raw_device: !input notify_device
 
-      # Derive the camera slug from the MQTT payload
+      # ── Parse the raw priority_zones string into a normalised list ──────
+      # Splits on commas, strips whitespace, lowercases each entry so
+      # comparisons against Frigate zone names are case-insensitive.
+      priority_zone_list: >
+        {% if input_priority_zones %}
+          {{ input_priority_zones.split(',') | map('trim') | map('lower') | list }}
+        {% else %}
+          []
+        {% endif %}
+
       triggered_camera: >
         {{ trigger.payload_json['after']['camera'] | lower | replace('-', '_') }}
-
-      # Build a list of camera slugs from the entity list (preserving priority order)
       camera_priority_list: >
         {{ input_cameras | map('replace', 'camera.', '') | list }}
-
-      # Check this trigger's camera is actually in our watch list
       camera_is_watched: >
         {{ triggered_camera in camera_priority_list }}
-
       object: "{{ trigger.payload_json['after']['label'] }}"
       labels: "{{ input_labels | list | lower }}"
 
-  # ── Step 2: bail if camera not in list or label not matched ────────────
+      # ── Determine if the triggering event is inside a priority zone ─────
+      # Frigate reports current_zones as a list on the 'after' object.
+      triggered_zones: >
+        {{ trigger.payload_json['after'].get('current_zones', []) | map('lower') | list }}
+      triggered_in_priority_zone: >
+        {% if priority_zone_list | length %}
+          {{ triggered_zones | select('in', priority_zone_list) | list | length > 0 }}
+        {% else %}
+          false
+        {% endif %}
+
+  # ── Step 2: bail if camera not watched or label not matched ─────────────
   - condition: template
     value_template: >
       {{ camera_is_watched and (not labels | length or object in labels) }}
 
-  # ── Step 3: collect competing events during the priority window ────────
-  # We wait for up to `collection_window` seconds for additional MQTT events
-  # from other watched cameras. We gather them into a list and then pick the
-  # one whose camera appears earliest in camera_priority_list.
+  # ── Step 3: seed competition list with the triggering event ─────────────
   - variables:
-      # Seed the competition list with the triggering event
       competing_events: >
-        {{ [{'camera': triggered_camera, 'id': trigger.payload_json['after']['id'], 'label': trigger.payload_json['after']['label']}] }}
+        {{ [{'camera': triggered_camera,
+             'id': trigger.payload_json['after']['id'],
+             'label': trigger.payload_json['after']['label'],
+             'zones': trigger.payload_json['after'].get('current_zones', []) | map('lower') | list}] }}
 
+  # ── Step 4: wait for competing events within the collection window ───────
   - wait_for_trigger:
       - trigger: mqtt
         topic: frigate/events
@@ -348,61 +454,123 @@ actions:
       seconds: "{{ input_collection_window }}"
     continue_on_timeout: true
 
+  # ── Step 5: pick the winner and build all resolved URLs ─────────────────
   - variables:
-      # Merge any additional event that fired during the window
       extra_camera: >
         {% if wait.trigger %}
           {{ wait.trigger.payload_json['after']['camera'] | lower | replace('-', '_') }}
-        {% else %}
-          ''
-        {% endif %}
+        {% else %}''{% endif %}
       extra_label: >
-        {% if wait.trigger %}
-          {{ wait.trigger.payload_json['after']['label'] }}
-        {% else %}
-          ''
-        {% endif %}
+        {% if wait.trigger %}{{ wait.trigger.payload_json['after']['label'] }}{% else %}''{% endif %}
       extra_id: >
+        {% if wait.trigger %}{{ wait.trigger.payload_json['after']['id'] }}{% else %}''{% endif %}
+      extra_zones: >
         {% if wait.trigger %}
-          {{ wait.trigger.payload_json['after']['id'] }}
-        {% else %}
-          ''
-        {% endif %}
+          {{ wait.trigger.payload_json['after'].get('current_zones', []) | map('lower') | list }}
+        {% else %}[]{% endif %}
 
-      # Full competition list including the extra event (if it was a watched camera + valid label)
       all_events: >
         {% set base = competing_events %}
-        {% if extra_camera and extra_camera in camera_priority_list and (not labels | length or extra_label in labels) and extra_camera != triggered_camera %}
-          {{ base + [{'camera': extra_camera, 'id': extra_id, 'label': extra_label}] }}
+        {% if extra_camera and extra_camera in camera_priority_list
+              and (not labels | length or extra_label in labels)
+              and extra_camera != triggered_camera %}
+          {{ base + [{'camera': extra_camera, 'id': extra_id, 'label': extra_label, 'zones': extra_zones}] }}
         {% else %}
           {{ base }}
         {% endif %}
 
-      # Pick the highest-priority event: lowest index in camera_priority_list wins
+      # ── Winner selection with zone-priority override ─────────────────────
+      # Scoring:
+      #   0 = in a priority zone          → wins outright
+      #   1 = not in a priority zone, use camera list rank as tiebreaker
+      # Within each tier the lowest camera_priority_list index wins.
       winning_event: >
-        {% set ns = namespace(best=none, best_rank=999) %}
+        {% set ns = namespace(best=none, best_zone=false, best_rank=999) %}
         {% for ev in all_events %}
           {% set rank = camera_priority_list.index(ev.camera) if ev.camera in camera_priority_list else 999 %}
-          {% if rank < ns.best_rank %}
+          {% set in_zone = (priority_zone_list | length > 0) and
+                           (ev.zones | select('in', priority_zone_list) | list | length > 0) %}
+          {% if ns.best is none %}
+            {% set ns.best = ev %}
+            {% set ns.best_zone = in_zone %}
+            {% set ns.best_rank = rank %}
+          {% elif in_zone and not ns.best_zone %}
+            {# New candidate is in a priority zone, current winner is not → override #}
+            {% set ns.best = ev %}
+            {% set ns.best_zone = true %}
+            {% set ns.best_rank = rank %}
+          {% elif in_zone and ns.best_zone and rank < ns.best_rank %}
+            {# Both in a priority zone → fall back to camera list order #}
+            {% set ns.best = ev %}
+            {% set ns.best_rank = rank %}
+          {% elif not in_zone and not ns.best_zone and rank < ns.best_rank %}
+            {# Neither in a priority zone → normal camera list order #}
             {% set ns.best = ev %}
             {% set ns.best_rank = rank %}
           {% endif %}
         {% endfor %}
         {{ ns.best }}
 
-      # Secondary cameras that fired but lost the priority race
       secondary_cameras: >
         {% set winner = winning_event.camera %}
         {{ all_events | selectattr('camera', '!=', winner) | map(attribute='camera') | list }}
 
-      # Resolved winner fields
       camera: "{{ winning_event.camera }}"
       id: "{{ winning_event.id }}"
       object: "{{ winning_event.label }}"
       label: "{{ winning_event.label | title }}"
 
-      base_url: "{{ input_base_url.rstrip('/') }}"
-      local_url: "{{ input_local_url.rstrip('/') }}"
+      # ── Determine whether the winning event fired from a priority zone ───
+      winning_in_priority_zone: >
+        {% if priority_zone_list | length %}
+          {{ winning_event.zones | select('in', priority_zone_list) | list | length > 0 }}
+        {% else %}
+          false
+        {% endif %}
+
+      # ── Which priority zone(s) matched (for the notification note) ───────
+      matched_zones: >
+        {% if winning_in_priority_zone %}
+          {{ winning_event.zones | select('in', priority_zone_list) | map('replace', '_', ' ') | map('title') | list }}
+        {% else %}
+          []
+        {% endif %}
+
+      zone_note: >
+        {% if winning_in_priority_zone and input_zone_priority_label and matched_zones | length %}
+          ⚠️ Priority zone: {{ matched_zones | join(', ') }}.
+        {% else %}''{% endif %}
+
+      # ── URL resolution ──────────────────────────────────────────────────
+      # Strip trailing slashes from all raw inputs
+      _base: "{{ input_base_url.rstrip('/') }}"
+      _local: "{{ input_local_url.rstrip('/') }}"
+      _frigate_raw: "{{ input_frigate_url.rstrip('/') }}"
+
+      # External HA: append :8123 only when NOT reverse proxied
+      base_url: >
+        {% if input_ha_reverse_proxied %}{{ _base }}
+        {% else %}{{ _base ~ ':8123' }}{% endif %}
+
+      # Internal HA: append :8123 only when NOT locally proxied
+      local_url: >
+        {% if input_local_ha_reverse_proxied %}{{ _local }}
+        {% else %}{{ _local ~ ':8123' }}{% endif %}
+
+      # Frigate UI URL resolution:
+      #   Priority 1 - explicit frigate_url provided: use it as-is
+      #   Priority 2 - no explicit url + reverse proxied: use HA base (no port)
+      #   Priority 3 - no explicit url + not proxied: append :8971 to HA base input
+      frigate_base_url: >
+        {% if _frigate_raw %}{{ _frigate_raw }}
+        {% elif input_frigate_reverse_proxied %}{{ _base }}
+        {% else %}{{ _base ~ ':8971' }}{% endif %}
+
+      # Final convenience URLs used throughout the rest of the automation
+      local_clip_url: "{{ local_url }}/api/frigate/notifications/{{ id }}/{{ camera }}/clip.mp4"
+      clip_url: "{{ base_url }}/api/frigate/notifications/{{ id }}/{{ camera }}/clip.mp4"
+      snapshot_url: "{{ base_url }}/api/frigate/notifications/{{ id }}/snapshot.jpg"
+      frigate_review_url: "{{ frigate_base_url }}/review"
 
       camera_name: >
         {% set name = camera | replace('_', ' ') | title %}
@@ -424,28 +592,22 @@ actions:
               else 'car' if label == 'Car'
               else 'home-assistant' }}
 
-      local_clip_url: "{{ local_url }}:8123/api/frigate/notifications/{{ id }}/{{ camera }}/clip.mp4"
-      clip_url: "{{ base_url }}/api/frigate/notifications/{{ id }}/{{ camera }}/clip.mp4"
-      snapshot_url: "{{ base_url }}/api/frigate/notifications/{{ id }}/snapshot.jpg"
-
-      # Build a human-readable note about secondary activity
       secondary_note: >
         {% if secondary_cameras | length %}
           Also detected on: {{ secondary_cameras | map('replace', '_', ' ') | map('title') | join(', ') }}.
-        {% else %}
-          ''
-        {% endif %}
+        {% else %}''{% endif %}
 
       title: ''
       message: >
         A {{ label }} was detected on the {{ camera_name }}.
+        {{ zone_note }}
         {{ secondary_note }}
 
       alert_once: true
       update_thumbnail: true
       sub_label: ''
 
-  # ── Step 4: send initial notification ─────────────────────────────────
+  # ── Step 6: send initial notification ──────────────────────────────────
   - repeat:
       for_each: "{{ raw_device }}"
       sequence:
@@ -469,22 +631,22 @@ actions:
               attachment:
                 url: /api/frigate/notifications/{{ id }}/thumbnail.jpg
               image: /api/frigate/notifications/{{ id }}/thumbnail.jpg?format=android
-              clickAction: "{{ base_url }}:8123/api/frigate/notifications/{{ id }}/{{ camera }}/clip.mp4"
+              clickAction: "{{ clip_url }}"
               push:
                 interruption-level: active
               alert_once: "{{ alert_once }}"
               actions:
                 - action: URI
                   title: View Clip
-                  uri: "{{ base_url }}:8123/api/frigate/notifications/{{ id }}/{{ camera }}/clip.mp4"
+                  uri: "{{ clip_url }}"
                 - action: URI
                   title: View Summary
                   uri: "{{ input_dashboard }}"
                 - action: URI
                   title: Open Frigate
-                  uri: "{{ base_url }}:8971/review"
+                  uri: "{{ frigate_review_url }}"
 
-  # ── Step 5: event update loop (snapshot/sublabel changes) ──────────────
+  # ── Step 7: event update loop (snapshot/sublabel changes) ───────────────
   - repeat:
       sequence:
         - wait_for_trigger:
@@ -517,9 +679,9 @@ actions:
             message: >
               {% if sub_label %}{% else %}
                 A {{ label }} was detected on the {{ camera_name }}.
+                {{ zone_note }}
                 {{ secondary_note }}
               {% endif %}
-
         - alias: Notify on snapshot update or sublabel change
           choose:
             - conditions:
@@ -549,26 +711,26 @@ actions:
                             attachment:
                               url: /api/frigate/notifications/{{ id }}/thumbnail.jpg
                             image: /api/frigate/notifications/{{ id }}/thumbnail.jpg?format=android
-                            clickAction: "{{ base_url }}:8123/api/frigate/notifications/{{ id }}/{{ camera }}/clip.mp4"
+                            clickAction: "{{ clip_url }}"
                             push:
                               interruption-level: active
                             alert_once: "{{ alert_once }}"
                             actions:
                               - action: URI
                                 title: View Clip
-                                uri: "{{ base_url }}:8123/api/frigate/notifications/{{ id }}/{{ camera }}/clip.mp4"
+                                uri: "{{ clip_url }}"
                               - action: URI
                                 title: View Summary
                                 uri: "{{ input_dashboard }}"
                               - action: URI
                                 title: Open Frigate
-                                uri: "{{ base_url }}:8971/review"
+                                uri: "{{ frigate_review_url }}"
       until:
         - condition: template
           value_template: >
             {{ not wait.trigger or wait.trigger.payload_json['type'] == 'end' }}
 
-  # ── Step 6: wait 30s for clip to be ready, then run LLM Vision ─────────
+  # ── Step 8: wait 30s for clip to be ready, then run LLM Vision ──────────
   - delay: 00:00:30
 
   - alias: Wait if LLM Vision already running
@@ -610,6 +772,10 @@ actions:
         {% if input_sublabel and sub_label %}
           You are analyzing frames from a security video showing that {{ title | string }}.
         {% endif %}
+        {% if winning_in_priority_zone and matched_zones | length %}
+          Note: this event was detected in a high-priority zone
+          ({{ matched_zones | join(', ') }}). Pay particular attention to activity in that area.
+        {% endif %}
         {% if secondary_cameras | length %}
           Note: simultaneous activity was also detected on
           {{ secondary_cameras | map('replace', '_', ' ') | map('title') | join(' and ') }}.
@@ -626,7 +792,7 @@ actions:
   - variables:
       message: "{{ response.response_text }}"
 
-  # ── Step 7: send LLM summary notification ──────────────────────────────
+  # ── Step 9: send final LLM summary notification ─────────────────────────
   - repeat:
       for_each: "{{ raw_device }}"
       sequence:
@@ -650,27 +816,27 @@ actions:
               attachment:
                 url: >
                   {% if input_ios_live_view %}
-                    {{ base_url }}/api/frigate/notifications/{{ id }}/{{ camera }}/clip.mp4?sign=true
+                    {{ clip_url }}?sign=true
                   {% else %}
                     /api/frigate/notifications/{{ id }}/thumbnail.jpg
                   {% endif %}
               image: /api/frigate/notifications/{{ id }}/thumbnail.jpg?format=android
-              clickAction: "{{ base_url }}:8123/api/frigate/notifications/{{ id }}/{{ camera }}/clip.mp4"
+              clickAction: "{{ clip_url }}"
               push:
                 interruption-level: active
               alert_once: "{{ alert_once }}"
               actions:
                 - action: URI
                   title: View Clip
-                  uri: "{{ base_url }}:8123/api/frigate/notifications/{{ id }}/{{ camera }}/clip.mp4"
+                  uri: "{{ clip_url }}"
                 - action: URI
                   title: View Summary
                   uri: "{{ input_dashboard }}"
                 - action: URI
                   title: Open Frigate
-                  uri: "{{ base_url }}:8971/review"
+                  uri: "{{ frigate_review_url }}"
 
-  # ── Step 8: cooldown before this automation can fire again ─────────────
+  # ── Step 10: cooldown before this automation can fire again ─────────────
   - delay: "{{ input_cooldown }}"
 
 mode: single
