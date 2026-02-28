@@ -309,6 +309,7 @@ actions:
       |lower}}'
     icon: mdi:{{'account-outline' if label == 'Person' else 'dog' if label == 'Dog'
       else 'cat' if label == 'Cat' else 'car' if label == 'Car' else 'home-assistant'}}
+    local_clip_url: '{{local_url}}:8123/api/frigate/notifications/{{id}}/{{camera}}/clip.mp4'
     clip_url: '{{base_url}}/api/frigate/notifications/{{id}}/{{camera}}/clip.mp4'
     snapshot_url: '{{base_url}}/api/frigate/notifications/{{id}}/snapshot.jpg'
     update_thumbnail: true
@@ -372,7 +373,7 @@ actions:
         sub_label: '{{ event[''after''][''sub_label'']}}'
         sub_label_changed: '{{ sub_label != event[''before''][''sub_label''] }}'
         update: '{{ alert_once or (new_snapshot and not sub_label_changed) }}'
-        title: "{% if sub_label %}\n  {{ sub_label | join(', ') }} was detected on the {{ camera_name }}.\n{% endif %}"
+        title: "{% if sub_label %}{% set ns = namespace(names=[]) %}{% for i in range(0, sub_label|length, 2) %}{% set ns.names = ns.names + [sub_label[i]] %}{% endfor %}{{ ns.names[:-1]|join(', ') ~ (', and ' if ns.names|length > 2 else ' and ') ~ ns.names[-1] if ns.names|length > 1 else ns.names[0] }} {% if ns.names|length > 1 %}were{% else %}was{% endif %} detected on the {{ camera_name }}.{% else %}A {{ label }} was detected on the {{ camera_name }}.{% endif %}"
         message: "{% if sub_label %}\n{%else%} A {{ label }} was detected on the {{ camera_name }}.{%endif%}"
     - choose:
         - conditions:
@@ -497,10 +498,8 @@ actions:
     temperature: '{{ input_temperature }}'
     generate_title: '{{ input_generate_title }}'
     expose_images: '{{ input_expose_images }}'
-    event_id: '{{ id }}'
-    message: "{{ input_prompt }} {% if input_sublabel and sub_label %}\n  These images
-      have already been passed to DeepStack and Double Take and {{ sub_label | string
-      }} has been identified, use this knowledge as well.\n{% endif %}\n"
+    video_file: '{{ local_clip_url }}'
+    message: "{% if input_sublabel and sub_label %}\n  You are analyzing frames from a security video showing that {{ title | string}}.\n{% endif %}{{ input_prompt }}\n"
   response_variable: response
   enabled: true
 - action: input_boolean.turn_off
