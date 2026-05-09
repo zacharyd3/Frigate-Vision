@@ -6,6 +6,34 @@ blueprint:
     and click actions. After each event, publishes a structured detection record to a
     retained MQTT topic so a Lovelace Markdown card can display the latest detection
     and scroll back through history.
+
+
+    **Required shell commands** — add the following to your `configuration.yaml`
+    (then restart Home Assistant):
+
+    ```yaml
+
+    shell_command:
+      download_frigate_snapshot: >
+        curl -s -o "/config/www/frigate/frigate_event_{{ camera }}_{{ id }}.jpg"
+        "{{ snapshot_url }}"
+      frigate_build_collage: >-
+        /config/scripts/frigate_collage.sh
+        "{{ clip_url }}"
+        "{{ event_id }}"
+        "{{ camera }}"
+    ```
+
+
+    Place `frigate_collage.sh` (and optionally `extract_frigate_frames.sh`) in
+    `/config/scripts/` and make them executable (`chmod +x`).
+    Both scripts are included in the repository.
+
+
+    The `frigate_build_collage` command and its script require **ffmpeg** to be
+    available inside your Home Assistant container. Most HA OS and Container
+    installs include it; if not, install the ffmpeg add-on.
+
   domain: automation
   input:
     camera:
@@ -160,6 +188,18 @@ blueprint:
               multiline: true
               multiple: false
 
+        use_collage:
+          name: Use Multi-Frame Collage for AI Analysis
+          description: >
+            When enabled, FrigateVision extracts 4 frames from the event clip and
+            builds a labelled 2×2 collage image for the AI to analyse instead of a
+            single snapshot. This gives the model temporal context across the event
+            but requires ffmpeg and the frigate_build_collage shell command to be
+            configured. See the blueprint description for setup instructions.
+          default: false
+          selector:
+            boolean: {}
+
     mqtt_history:
       name: MQTT History
       icon: mdi:history
@@ -301,6 +341,7 @@ actions:
       input_mqtt_history_topic: !input mqtt_history_topic
       input_mqtt_history_limit: !input mqtt_history_limit
       input_mqtt_broker_sensor: !input mqtt_broker_sensor
+      input_use_collage: !input use_collage
       labels: '{{ input_labels | list | lower }}'
       object: '{{ trigger.payload_json[''after''][''label''] }}'
       label: '{{ object | title }}'
@@ -332,7 +373,7 @@ actions:
               else 'home-assistant' }}
       clip_url: '{{ base_url }}/api/frigate/notifications/{{ id }}/{{ camera }}/clip.mp4'
       snapshot_url: '{{ base_url }}/api/frigate/notifications/{{ id }}/snapshot.jpg'
-      local_snapshot_path: '/config/www/frigate_snapshot_{{ camera }}_{{ id }}.jpg'
+      local_snapshot_path: '/config/www/frigate/frigate_event_{{ camera }}_{{ id }}.jpg'
       update_thumbnail: true
       alert_once: true
 
@@ -526,7 +567,7 @@ actions:
     target:
       entity_id: !input helper
 
-  # ── Download snapshot to /config/www for ai_task ─────────────────────────
+  # ── Download snapshot to /config/www/frigate for ai_task ─────────────────
   - service: shell_command.download_frigate_snapshot
     data:
       camera: '{{ camera }}'
@@ -534,14 +575,18 @@ actions:
       snapshot_url: '{{ snapshot_url }}'
   - delay: '00:00:03'
 
-  # ── Build multi-frame collage from clip ────────────────────────────────
-  - service: shell_command.frigate_build_collage
-    data:
-      clip_url: '{{ clip_url }}'
-      event_id: '{{ id }}'
-      camera: '{{ camera }}'
-
-  - delay: '00:00:05'
+  # ── Build multi-frame collage from clip (optional) ────────────────────────
+  - alias: Build collage if enabled
+    if:
+      - condition: template
+        value_template: '{{ input_use_collage }}'
+    then:
+      - service: shell_command.frigate_build_collage
+        data:
+          clip_url: '{{ clip_url }}'
+          event_id: '{{ id }}'
+          camera: '{{ camera }}'
+      - delay: '00:00:05'
 
   # ── Debug: pre-AI log ─────────────────────────────────────────────────────
   - alias: Debug pre-AI
@@ -556,6 +601,7 @@ actions:
             DEBUG (pre-AI):
               snapshot_url: {{ snapshot_url }}
               local_snapshot_path: {{ local_snapshot_path }}
+              use_collage: {{ input_use_collage }}
 
   # ── AI snapshot analysis ──────────────────────────────────────────────────
   - alias: 'AI: Analyse Frigate snapshot'
@@ -595,7 +641,7 @@ actions:
             title: '{{ title }}'
             message: '{{ message }}'
             data:
-              channel: '{{ camera }}_notifications'
+              channel: '{{ camera_name }} Notifications'
               timeout: '{{ input_notification_timeout * 60 | int }}'
               tag: '{{ id }}'
               group: '{{ camera_name }}'
