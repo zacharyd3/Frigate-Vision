@@ -413,7 +413,7 @@ actions:
               clickAction: '{{ clip_url }}'
               push:
                 interruption-level: active
-              alert_once: '{{ alert_once }}'
+              alert_once: true
               actions:
                 - action: URI
                   title: View Clip
@@ -528,7 +528,7 @@ actions:
                             clickAction: '{{ clip_url }}'
                             push:
                               interruption-level: passive
-                            alert_once: '{{ alert_once }}'
+                            alert_once: true
                             actions:
                               - action: URI
                                 title: View Clip
@@ -669,7 +669,7 @@ actions:
               clickAction: '{{ clip_url }}'
               push:
                 interruption-level: passive
-              alert_once: '{{ alert_once }}'
+              alert_once: true
               actions:
                 - action: URI
                   title: View Clip
