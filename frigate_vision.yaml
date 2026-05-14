@@ -527,7 +527,7 @@ actions:
                             image: '{{ base_url }}/api/frigate/notifications/{{ id }}/thumbnail.jpg?format=android'
                             clickAction: '{{ clip_url }}'
                             push:
-                              interruption-level: active
+                              interruption-level: passive
                             alert_once: '{{ alert_once }}'
                             actions:
                               - action: URI
@@ -668,7 +668,7 @@ actions:
                 {{ base_url }}/api/frigate/notifications/{{ id }}/{{ 'snapshot' if input_notification_image == 'snapshot' else 'thumbnail' }}.jpg?format=android
               clickAction: '{{ clip_url }}'
               push:
-                interruption-level: active
+                interruption-level: passive
               alert_once: '{{ alert_once }}'
               actions:
                 - action: URI
