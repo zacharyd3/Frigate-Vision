@@ -611,6 +611,12 @@ actions:
       entity_id: '{{ input_ai_task_entity }}'
       task_name: Frigate Event Analysis
       instructions: >
+        {% set hour = now().hour %}
+        {% if hour >= 21 or hour < 6 %}
+        Note: This event occurred at night. Images may be in infrared or low-light.
+        {% elif hour >= 6 and hour < 9 %}
+        Note: This event occurred in the early morning.
+        {% endif %}
         {% if input_sublabel and sub_label %}
           Identity information:
           "{{ sub_label }}" was identified in this footage by previous machine learning analysis.
