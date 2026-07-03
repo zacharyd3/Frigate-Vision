@@ -46,8 +46,8 @@ T3=$((DURATION * 80 / 100))
 echo "Duration: $DURATION  |  Frames at: $T1s  $T2s  $T3s"
 
 # Extract frames
-ffmpeg -y -ss "$T1" -i "$CLIP_URL" -vframes 1 "$OUTPUT_DIR/${EVENT_ID}_1.jpg"
-ffmpeg -y -ss "$T2" -i "$CLIP_URL" -vframes 1 "$OUTPUT_DIR/${EVENT_ID}_2.jpg"
-ffmpeg -y -ss "$T3" -i "$CLIP_URL" -vframes 1 "$OUTPUT_DIR/${EVENT_ID}_3.jpg"
+ffmpeg -nostdin -y -ss "$T1" -i "$CLIP_URL" -vframes 1 "$OUTPUT_DIR/${EVENT_ID}_1.jpg"
+ffmpeg -nostdin -y -ss "$T2" -i "$CLIP_URL" -vframes 1 "$OUTPUT_DIR/${EVENT_ID}_2.jpg"
+ffmpeg -nostdin -y -ss "$T3" -i "$CLIP_URL" -vframes 1 "$OUTPUT_DIR/${EVENT_ID}_3.jpg"
 
 echo "Done — frames saved to $OUTPUT_DIR"
