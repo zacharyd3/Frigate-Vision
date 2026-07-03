@@ -1,5 +1,5 @@
 blueprint:
-  name: FrigateVision
+  name: FrigateVision - Beta
   description: >
     Sends notifications for Frigate events with AI snapshot analysis via ai_task.
     Supports Android and iOS, sublabel tracking, notification cooldown, custom icons,
@@ -173,16 +173,54 @@ blueprint:
 
         prompt:
           name: AI Prompt
-          description: Prompt sent to the AI model along with the snapshot image.
+          description: >
+            Base prompt sent to the AI model along with the snapshot/collage image.
+            Keep camera-specific layout details in "Scene Context" and named people
+            in "Known Identities" below instead of editing this field per-camera —
+            that lets you reuse one prompt across multiple FrigateVision automations.
           default: >-
-            You are an automated security notification system. A surveillance camera
-            has detected activity. Respond only with a brief incident description —
-            no greetings, no analysis commentary, no mention of cameras, frames,
-            timestamps, or image quality. Describe only what is visibly happening:
-            the movements and actions of people, animals, vehicles, packages, or
-            equipment. Write in plain declarative sentences, 1 to 3 sentences
-            maximum, as if composing a push notification body. Keep the response
-            under 30 words.
+            You are a home security notification system. You're shown one image:
+            4 chronological frames from a single event, placed side by side in
+            time order from left to right.
+
+            Read all 4 frames as one sequence and identify the single main thing
+            that happened — arrival, departure, package delivery, vehicle
+            activity, lingering, an animal, etc. Don't describe frames
+            individually.
+
+            Respond only with a concise push notification-style summary, 1 to 3
+            short sentences, under 50 words. State only what's visible. Do not
+            mention cameras, frames, timestamps, image quality, or uncertainty.
+            Normal resident activity should be described neutrally, not as
+            suspicious.
+          selector:
+            text:
+              multiline: true
+              multiple: false
+
+        scene_context:
+          name: Scene Context
+          description: >
+            Optional camera-specific layout description — what's left/right/top/
+            bottom in frame, fixed landmarks (vehicles, walkways, neighboring
+            structures), and what movement in different directions means (e.g.
+            "approaching" vs "departing"). Inserted into the AI instructions
+            ahead of the main prompt. Leave blank to skip.
+          default: ""
+          selector:
+            text:
+              multiline: true
+              multiple: false
+
+        known_identities:
+          name: Known Identities
+          description: >
+            Optional list of named people this camera may recognize via Frigate
+            sublabels, and how the AI should describe each one (e.g. "Zach:
+            homeowner, describe as routine unless unusual. Gerry, Sue:
+            neighbors, mention naturally, not suspicious."). Inserted into the
+            AI instructions alongside sublabel context. Leave blank to skip.
+          default: ""
           selector:
             text:
               multiline: true
@@ -192,10 +230,10 @@ blueprint:
           name: Use Multi-Frame Collage for AI Analysis
           description: >
             When enabled, FrigateVision extracts 4 frames from the event clip and
-            builds a labelled 2×2 collage image for the AI to analyse instead of a
-            single snapshot. This gives the model temporal context across the event
-            but requires ffmpeg and the frigate_build_collage shell command to be
-            configured. See the blueprint description for setup instructions.
+            builds a horizontal-strip image for the AI to analyse instead of a
+            single snapshot. This gives the model temporal context across the
+            event but requires ffmpeg and the frigate_build_collage shell command
+            to be configured. See the blueprint description for setup instructions.
           default: false
           selector:
             boolean: {}
@@ -329,6 +367,8 @@ actions:
       input_ios_live_view: !input ios_live_view
       input_notification_image: !input notification_image
       input_prompt: !input prompt
+      input_scene_context: !input scene_context
+      input_known_identities: !input known_identities
       input_sublabel: !input sublabel
       input_cooldown: !input cooldown
       input_helper: !input helper
@@ -607,6 +647,7 @@ actions:
   - alias: 'AI: Analyse Frigate snapshot'
     action: ai_task.generate_data
     response_variable: ai_response
+    continue_on_error: true
     data:
       entity_id: '{{ input_ai_task_entity }}'
       task_name: Frigate Event Analysis
@@ -616,6 +657,14 @@ actions:
         Note: This event occurred at night. Images may be in infrared or low-light.
         {% elif hour >= 6 and hour < 9 %}
         Note: This event occurred in the early morning.
+        {% endif %}
+        {% if input_scene_context | trim != '' %}
+          Scene context:
+          {{ input_scene_context }}
+        {% endif %}
+        {% if input_known_identities | trim != '' %}
+          Known identities:
+          {{ input_known_identities }}
         {% endif %}
         {% if input_sublabel and sub_label %}
           Identity information:
@@ -631,8 +680,20 @@ actions:
     target:
       entity_id: !input helper
 
+  - alias: Debug AI response
+    if:
+      - condition: template
+        value_template: '{{ input_debug }}'
+    then:
+      - service: logbook.log
+        data_template:
+          name: FrigateVision
+          message: >
+            DEBUG (AI response):
+              raw: {{ ai_response }}
+
   - variables:
-      message: '{{ ai_response.data | default(message) }}'
+      message: '{{ ai_response.data | default(message) if ai_response is defined else message }}'
 
   # ── Final AI notification ─────────────────────────────────────────────────
   - repeat:
