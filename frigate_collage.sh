@@ -104,10 +104,10 @@ echo "Extracting frames at: $T1  $T2  $T3  $T4"
 
 # -update 1 is required in ffmpeg 6+ when writing a single image to a
 # non-patterned filename (e.g. foo.jpg instead of foo_%03d.jpg)
-ffmpeg -y -ss "$T1" -i "$LOCAL_CLIP" -frames:v 1 -update 1 "$FRAME1"
-ffmpeg -y -ss "$T2" -i "$LOCAL_CLIP" -frames:v 1 -update 1 "$FRAME2"
-ffmpeg -y -ss "$T3" -i "$LOCAL_CLIP" -frames:v 1 -update 1 "$FRAME3"
-ffmpeg -y -ss "$T4" -i "$LOCAL_CLIP" -frames:v 1 -update 1 "$FRAME4"
+ffmpeg -nostdin -y -ss "$T1" -i "$LOCAL_CLIP" -frames:v 1 -update 1 "$FRAME1"
+ffmpeg -nostdin -y -ss "$T2" -i "$LOCAL_CLIP" -frames:v 1 -update 1 "$FRAME2"
+ffmpeg -nostdin -y -ss "$T3" -i "$LOCAL_CLIP" -frames:v 1 -update 1 "$FRAME3"
+ffmpeg -nostdin -y -ss "$T4" -i "$LOCAL_CLIP" -frames:v 1 -update 1 "$FRAME4"
 
 test -f "$FRAME1"
 test -f "$FRAME2"
@@ -134,7 +134,7 @@ label_frame() {
     return
   fi
 
-  ffmpeg -y -i "$SRC" \
+  ffmpeg -nostdin -y -i "$SRC" \
     -vf "drawbox=x=10:y=10:w=iw-20:h=60:color=black@0.65:t=fill,\
 drawtext=fontfile='${FONT}':text='${LABEL}':x=20:y=20:fontsize=28:fontcolor=white" \
     -update 1 "$DST"
@@ -149,7 +149,7 @@ echo "Labels added"
 
 # ── 2×2 collage ───────────────────────────────────────────────────────────
 # scale=-2 (not -1) ensures dimensions stay even-numbered for jpeg encoding
-ffmpeg -y \
+ffmpeg -nostdin -y \
   -i "$LABELED1" \
   -i "$LABELED2" \
   -i "$LABELED3" \
