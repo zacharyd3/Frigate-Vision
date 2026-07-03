@@ -668,8 +668,7 @@ actions:
         {% endif %}
         {% if input_sublabel and sub_label %}
           Identity information:
-          "{{ sub_label }}" was identified in this footage by previous machine learning analysis.
-          If the visible person matches this identity, use their name naturally in the summary instead of generic terms like "a person".
+          "{{ sub_label }}" was identified in this footage by previous machine learning analysis; use their name naturally in the summary instead of generic terms like "a person".
         {% endif %}
         {{ input_prompt }}
       attachments:
