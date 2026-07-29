@@ -20,7 +20,7 @@
 
 - **🚨 Listens for Frigate detection events** from any camera via MQTT
 - **🧠 Analyses snapshots with AI** using Home Assistant's `ai_task` domain — works with Ollama, OpenAI, Google, and any other provider you have configured
-- **📸 Optional multi-frame collage** — extracts 4 labelled frames from the event clip and feeds them to the AI for richer temporal context
+- **📸 Optional multi-frame collage** — extracts 4 frames from the event clip and feeds them to the AI for richer temporal context
 - **🕒 Per-camera cooldowns** to prevent notification spam
 - **📱 Instant + enriched notifications** — a fast initial push fires immediately, then a second enriched notification follows once AI analysis is complete
 - **🔔 Multi-device support** — send to one or more phones/tablets simultaneously
@@ -69,7 +69,7 @@ chmod +x /config/scripts/extract_frigate_frames.sh
 
 | Script | Purpose |
 |---|---|
-| `frigate_collage.sh` | Downloads the event clip, extracts 4 frames at 10/35/60/90% through the clip, stamps each with camera name and timestamp, and assembles a single-row (1×4) collage for AI analysis |
+| `frigate_collage.sh` | Downloads the event clip, extracts 4 frames at 10/35/60/90% through the clip, and assembles them into a single-row (1×4) collage for AI analysis |
 | `extract_frigate_frames.sh` | Lightweight alternative — extracts 3 frames directly from the remote clip URL without downloading it first. No collage is built; useful for custom workflows |
 
 The snapshot download command (`download_frigate_snapshot`) is always required. The collage script is only called when **Use Multi-Frame Collage** is enabled in the blueprint.

@@ -2,8 +2,10 @@
 # frigate_collage.sh
 #
 # Downloads a Frigate event clip, extracts 4 frames at 10/35/60/90% through
-# the clip, stamps each with the camera name and timestamp, then assembles
-# them into a single-row (1×4) collage saved to /config/www/frigate/.
+# the clip, then assembles them into a single-row (1×4) collage saved to
+# /config/www/frigate/. Frames are left unlabelled — overlaying camera name
+# and timestamps on top of already-busy frames only makes the collage harder
+# for the AI to read.
 #
 # Usage:
 #   frigate_collage.sh "<clip_url>" "<event_id>" "<camera_name>"
@@ -32,44 +34,7 @@ FRAME2="$WORK_DIR/${EVENT_ID}_2.jpg"
 FRAME3="$WORK_DIR/${EVENT_ID}_3.jpg"
 FRAME4="$WORK_DIR/${EVENT_ID}_4.jpg"
 
-LABELED1="$WORK_DIR/${EVENT_ID}_labeled_1.jpg"
-LABELED2="$WORK_DIR/${EVENT_ID}_labeled_2.jpg"
-LABELED3="$WORK_DIR/${EVENT_ID}_labeled_3.jpg"
-LABELED4="$WORK_DIR/${EVENT_ID}_labeled_4.jpg"
-
 COLLAGE="$WORK_DIR/frigate_event_${CAMERA}_${EVENT_ID}.jpg"
-
-# ── Font discovery ─────────────────────────────────────────────────────────
-# Alpine/HA OS ships no fonts by default. Search common paths and fall back
-# to skipping labels entirely rather than crashing.
-find_font() {
-  for f in \
-    /usr/share/fonts/dejavu/DejaVuSans-Bold.ttf \
-    /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf \
-    /usr/share/fonts/TTF/DejaVuSans-Bold.ttf \
-    /usr/share/fonts/dejavu/DejaVuSans.ttf \
-    /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
-    /usr/share/fonts/TTF/DejaVuSans.ttf \
-    /usr/share/fonts/liberation/LiberationSans-Bold.ttf \
-    /usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf \
-    /usr/share/fonts/truetype/freefont/FreeSans.ttf \
-    /usr/share/fonts/freefont/FreeSans.ttf; do
-    [ -f "$f" ] && echo "$f" && return 0
-  done
-  # Last resort: find anything usable
-  find /usr/share/fonts -name "*.ttf" 2>/dev/null | head -1
-}
-
-FONT=$(find_font)
-
-if [ -z "$FONT" ]; then
-  echo "WARNING: No font found — labels will be skipped."
-  echo "Install dejavu-fonts (apk add ttf-dejavu) for camera/timestamp labels."
-  SKIP_LABELS=1
-else
-  echo "Using font: $FONT"
-  SKIP_LABELS=0
-fi
 
 echo "==== START ===="
 echo "Downloading clip..."
@@ -116,46 +81,15 @@ test -f "$FRAME4"
 
 echo "Frames extracted"
 
-# ── Labels ────────────────────────────────────────────────────────────────
-# Convert float timestamps to zero-padded integer seconds
-TS1=$(printf "%02d" "${T1%.*}")
-TS2=$(printf "%02d" "${T2%.*}")
-TS3=$(printf "%02d" "${T3%.*}")
-TS4=$(printf "%02d" "${T4%.*}")
-
-label_frame() {
-  local SRC="$1"
-  local DST="$2"
-  local LABEL="$3"
-
-  if [ "$SKIP_LABELS" -eq 1 ]; then
-    # No font available — copy frame unlabelled so collage can still proceed
-    cp "$SRC" "$DST"
-    return
-  fi
-
-  ffmpeg -nostdin -y -i "$SRC" \
-    -vf "drawbox=x=10:y=10:w=iw-20:h=60:color=black@0.65:t=fill,\
-drawtext=fontfile='${FONT}':text='${LABEL}':x=20:y=20:fontsize=28:fontcolor=white" \
-    -update 1 "$DST"
-}
-
-label_frame "$FRAME1" "$LABELED1" "${CAMERA} - 00:${TS1}"
-label_frame "$FRAME2" "$LABELED2" "${CAMERA} - 00:${TS2}"
-label_frame "$FRAME3" "$LABELED3" "${CAMERA} - 00:${TS3}"
-label_frame "$FRAME4" "$LABELED4" "${CAMERA} - 00:${TS4}"
-
-echo "Labels added"
-
 # ── Single-row collage ─────────────────────────────────────────────────────
 # Frames are stacked left-to-right in chronological order so the AI reads the
 # event as a single timeline. scale=-2 (not -1) keeps dimensions even-numbered
 # for jpeg encoding.
 ffmpeg -nostdin -y \
-  -i "$LABELED1" \
-  -i "$LABELED2" \
-  -i "$LABELED3" \
-  -i "$LABELED4" \
+  -i "$FRAME1" \
+  -i "$FRAME2" \
+  -i "$FRAME3" \
+  -i "$FRAME4" \
   -filter_complex "\
 [0:v]scale=640:-2[a]; \
 [1:v]scale=640:-2[b]; \
@@ -169,6 +103,5 @@ ls -lah "$COLLAGE"
 
 # ── Cleanup ───────────────────────────────────────────────────────────────
 rm -f "$LOCAL_CLIP" "$FRAME1" "$FRAME2" "$FRAME3" "$FRAME4"
-rm -f "$LABELED1" "$LABELED2" "$LABELED3" "$LABELED4"
 
 echo "==== DONE ===="
