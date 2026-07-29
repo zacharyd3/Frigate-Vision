@@ -628,6 +628,23 @@ actions:
           camera: '{{ camera }}'
       - delay: '00:00:05'
 
+  # ── Collect Frigate zones for AI grounding ────────────────────────────────
+  # entered_zones is cumulative over the event, so merge the freshest loop
+  # payload (persists after the loop, like sub_label) with the initial trigger
+  # payload as a fallback. This is authoritative location data straight from
+  # Frigate — far more reliable than letting the model guess where the subject
+  # was, and it keeps the AI from inventing areas it never actually entered.
+  - variables:
+      detected_zones: >-
+        {% set ns = namespace(zones=[]) %}
+        {% set init = trigger.payload_json['after'] %}
+        {% set ns.zones = ns.zones + (init['entered_zones'] or []) + (init['current_zones'] or []) %}
+        {% if event is defined and event is not none %}
+          {% set last = event['after'] %}
+          {% set ns.zones = ns.zones + (last['entered_zones'] or []) + (last['current_zones'] or []) %}
+        {% endif %}
+        {{ ns.zones | unique | list }}
+
   # ── Debug: pre-AI log ─────────────────────────────────────────────────────
   - alias: Debug pre-AI
     if:
@@ -642,6 +659,7 @@ actions:
               snapshot_url: {{ snapshot_url }}
               local_snapshot_path: {{ local_snapshot_path }}
               use_collage: {{ input_use_collage }}
+              detected_zones: {{ detected_zones }}
 
   # ── AI snapshot analysis ──────────────────────────────────────────────────
   - alias: 'AI: Analyse Frigate snapshot'
@@ -665,6 +683,10 @@ actions:
         {% if input_known_identities | trim != '' %}
           Known identities:
           {{ input_known_identities }}
+        {% endif %}
+        {% if detected_zones | length > 0 %}
+          Detected zones (authoritative location data):
+          The camera system tracked the {{ object }} in the following zone(s): {{ detected_zones | join(', ') }}. This is ground-truth location data and is more reliable than anything you infer visually. Only describe the subject as being in, entering, or moving through an area if it corresponds to one of these zones. Do not claim they approached, reached, or used any area that is not in this list.
         {% endif %}
         {% if input_sublabel and sub_label %}
           Identity information:
