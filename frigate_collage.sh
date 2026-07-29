@@ -1,7 +1,7 @@
 #!/bin/bash
 # frigate_collage.sh
 #
-# Downloads a Frigate event clip, extracts 4 frames at 10/35/60/90% through
+# Downloads a Frigate event clip, extracts 4 frames at 20/40/60/80% through
 # the clip, then assembles them into a single-row (1×4) collage saved to
 # /config/www/frigate/. Frames are left unlabelled — overlaying camera name
 # and timestamps on top of already-busy frames only makes the collage harder
@@ -59,11 +59,16 @@ if [ -z "$DURATION" ]; then
   exit 1
 fi
 
-# ── Timestamps at 10 / 35 / 60 / 90 % ────────────────────────────────────
-T1=$(awk "BEGIN {print $DURATION * 0.1}")
-T2=$(awk "BEGIN {print $DURATION * 0.35}")
+# ── Timestamps at 20 / 40 / 60 / 80 % ────────────────────────────────────
+# Sample the active middle of the clip rather than the very start/end. Frigate
+# clips include pre/post-capture buffer where the subject usually isn't in
+# frame yet or has already left, so 10%/90% frames often come out empty —
+# which wastes half the collage and makes the AI infer bogus arrivals and
+# departures. Keeping to 20–80% concentrates the frames on the actual event.
+T1=$(awk "BEGIN {print $DURATION * 0.2}")
+T2=$(awk "BEGIN {print $DURATION * 0.4}")
 T3=$(awk "BEGIN {print $DURATION * 0.6}")
-T4=$(awk "BEGIN {print $DURATION * 0.9}")
+T4=$(awk "BEGIN {print $DURATION * 0.8}")
 
 echo "Extracting frames at: $T1  $T2  $T3  $T4"
 

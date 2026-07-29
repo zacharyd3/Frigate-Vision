@@ -692,15 +692,18 @@ actions:
           Known identities:
           {{ input_known_identities }}
         {% endif %}
-        {% if detected_zones | length > 0 %}
-          Detected zones (authoritative location data):
-          The camera system tracked the {{ object }} in these zone(s), and ONLY these: {{ detected_zones | join(', ') }}. This is the complete, authoritative record of everywhere the subject went, and it overrides anything you think you see. The subject did NOT enter, approach, reach, or use any place that is not in this list — even if that place is clearly visible in the image. Describe the event using only these zones; do not name any other location.
-        {% endif %}
         {% if input_sublabel and sub_label_names %}
           Identity information:
           "{{ sub_label_names }}" was identified in this footage by previous machine learning analysis; use the name(s) naturally in the summary instead of generic terms like "a person".
         {% endif %}
         {{ input_prompt }}
+        {# Detected zones go LAST so the model reads this authoritative
+           constraint immediately before answering (recency), where a small
+           model weights it most heavily. #}
+        {% if detected_zones | length > 0 %}
+          Detected zones (authoritative location data):
+          The camera system tracked the {{ object }} in these zone(s), and ONLY these: {{ detected_zones | join(', ') }}. This is the complete, authoritative record of everywhere the subject went, and it overrides anything you think you see. The subject did NOT enter, approach, reach, or use any place that is not in this list — even if that place is clearly visible in the image. Describe the event using only these zones; do not name any other location.
+        {% endif %}
       attachments:
         - media_content_id: >-
             media-source://media_source/local/frigate/frigate_event_{{ camera }}_{{ id }}.jpg

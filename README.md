@@ -70,7 +70,7 @@ chmod +x /config/scripts/extract_frigate_frames.sh
 
 | Script | Purpose |
 |---|---|
-| `frigate_collage.sh` | Downloads the event clip, extracts 4 frames at 10/35/60/90% through the clip, and assembles them into a single-row (1×4) collage for AI analysis |
+| `frigate_collage.sh` | Downloads the event clip, extracts 4 frames at 20/40/60/80% through the clip, and assembles them into a single-row (1×4) collage for AI analysis |
 | `extract_frigate_frames.sh` | Lightweight alternative — extracts 3 frames directly from the remote clip URL without downloading it first. No collage is built; useful for custom workflows |
 
 The snapshot download command (`download_frigate_snapshot`) is always required. The collage script is only called when **Use Multi-Frame Collage** is enabled in the blueprint.
