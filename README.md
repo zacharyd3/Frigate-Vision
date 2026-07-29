@@ -69,7 +69,7 @@ chmod +x /config/scripts/extract_frigate_frames.sh
 
 | Script | Purpose |
 |---|---|
-| `frigate_collage.sh` | Downloads the event clip, extracts 4 frames at 10/35/60/90% through the clip, stamps each with camera name and timestamp, and assembles a 2×2 collage for AI analysis |
+| `frigate_collage.sh` | Downloads the event clip, extracts 4 frames at 10/35/60/90% through the clip, stamps each with camera name and timestamp, and assembles a single-row (1×4) collage for AI analysis |
 | `extract_frigate_frames.sh` | Lightweight alternative — extracts 3 frames directly from the remote clip URL without downloading it first. No collage is built; useful for custom workflows |
 
 The snapshot download command (`download_frigate_snapshot`) is always required. The collage script is only called when **Use Multi-Frame Collage** is enabled in the blueprint.
@@ -84,7 +84,7 @@ Select your `ai_task` entity in the **AI Analysis** section of the blueprint, an
 
 ### Multi-Frame Collage (optional)
 
-Enable **Use Multi-Frame Collage** in the AI Analysis section to send the AI a 2×2 grid of frames from the event clip instead of a single snapshot. This gives the model visibility into how the event unfolded over time, which can improve summary quality for longer events.
+Enable **Use Multi-Frame Collage** in the AI Analysis section to send the AI a single row of frames from the event clip instead of a single snapshot. Laying the frames out left-to-right in chronological order makes the timeline easier for the model to read. This gives the model visibility into how the event unfolded over time, which can improve summary quality for longer events.
 
 Requires `frigate_collage.sh` to be installed and `frigate_build_collage` to be defined in `shell_command` (see setup above).
 
@@ -144,7 +144,7 @@ Then select `sensor.frigate_vision_history` as the **MQTT History Sensor Entity*
 ```
 frigate_vision.yaml          # The blueprint — import this into Home Assistant
 scripts/
-  frigate_collage.sh         # Builds a 2×2 multi-frame collage from a Frigate clip
+  frigate_collage.sh         # Builds a single-row multi-frame collage from a Frigate clip
   extract_frigate_frames.sh  # Extracts 3 individual frames (lightweight alternative)
 ```
 

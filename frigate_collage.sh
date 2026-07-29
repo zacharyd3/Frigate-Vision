@@ -3,7 +3,7 @@
 #
 # Downloads a Frigate event clip, extracts 4 frames at 10/35/60/90% through
 # the clip, stamps each with the camera name and timestamp, then assembles
-# them into a 2×2 collage saved to /config/www/frigate/.
+# them into a single-row (1×4) collage saved to /config/www/frigate/.
 #
 # Usage:
 #   frigate_collage.sh "<clip_url>" "<event_id>" "<camera_name>"
@@ -147,8 +147,10 @@ label_frame "$FRAME4" "$LABELED4" "${CAMERA} - 00:${TS4}"
 
 echo "Labels added"
 
-# ── 2×2 collage ───────────────────────────────────────────────────────────
-# scale=-2 (not -1) ensures dimensions stay even-numbered for jpeg encoding
+# ── Single-row collage ─────────────────────────────────────────────────────
+# Frames are stacked left-to-right in chronological order so the AI reads the
+# event as a single timeline. scale=-2 (not -1) keeps dimensions even-numbered
+# for jpeg encoding.
 ffmpeg -nostdin -y \
   -i "$LABELED1" \
   -i "$LABELED2" \
@@ -159,9 +161,7 @@ ffmpeg -nostdin -y \
 [1:v]scale=640:-2[b]; \
 [2:v]scale=640:-2[c]; \
 [3:v]scale=640:-2[d]; \
-[a][b]hstack=inputs=2[top]; \
-[c][d]hstack=inputs=2[bottom]; \
-[top][bottom]vstack=inputs=2" \
+[a][b][c][d]hstack=inputs=4" \
   "$COLLAGE"
 
 echo "Collage created:"
