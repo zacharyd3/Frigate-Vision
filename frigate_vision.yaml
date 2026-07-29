@@ -641,6 +641,16 @@ actions:
           {% set ns.zones = ns.zones + (last['entered_zones'] or []) + (last['current_zones'] or []) %}
         {% endif %}
         {{ ns.zones | unique | list }}
+      # Frigate delivers sub_label as a flat [name, score, name, score, ...]
+      # list, so extract just the names for a clean, human-readable string.
+      sub_label_names: >-
+        {% set ns = namespace(names=[]) %}
+        {% if sub_label %}
+          {% for i in range(0, sub_label | length, 2) %}
+            {% set ns.names = ns.names + [sub_label[i] | trim] %}
+          {% endfor %}
+        {% endif %}
+        {{ ns.names | join(', ') }}
 
   # ── Debug: pre-AI log ─────────────────────────────────────────────────────
   - alias: Debug pre-AI
@@ -657,6 +667,7 @@ actions:
               local_snapshot_path: {{ local_snapshot_path }}
               use_collage: {{ input_use_collage }}
               detected_zones: {{ detected_zones }}
+              sub_label_names: {{ sub_label_names }}
 
   # ── AI snapshot analysis ──────────────────────────────────────────────────
   - alias: 'AI: Analyse Frigate snapshot'
@@ -683,11 +694,11 @@ actions:
         {% endif %}
         {% if detected_zones | length > 0 %}
           Detected zones (authoritative location data):
-          The camera system tracked the {{ object }} in the following zone(s): {{ detected_zones | join(', ') }}. This is ground-truth location data and is more reliable than anything you infer visually. Only describe the subject as being in, entering, or moving through an area if it corresponds to one of these zones. Do not claim they approached, reached, or used any area that is not in this list.
+          The camera system tracked the {{ object }} in these zone(s), and ONLY these: {{ detected_zones | join(', ') }}. This is the complete, authoritative record of everywhere the subject went, and it overrides anything you think you see. The subject did NOT enter, approach, reach, or use any place that is not in this list — even if that place is clearly visible in the image. Describe the event using only these zones; do not name any other location.
         {% endif %}
-        {% if input_sublabel and sub_label %}
+        {% if input_sublabel and sub_label_names %}
           Identity information:
-          "{{ sub_label }}" was identified in this footage by previous machine learning analysis; use their name naturally in the summary instead of generic terms like "a person".
+          "{{ sub_label_names }}" was identified in this footage by previous machine learning analysis; use the name(s) naturally in the summary instead of generic terms like "a person".
         {% endif %}
         {{ input_prompt }}
       attachments:
