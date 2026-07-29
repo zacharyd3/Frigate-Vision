@@ -44,13 +44,13 @@ blueprint:
           domain: [camera]
           multiple: false
 
-    labels:
-      name: Labels to Notify On
-      description: List of Frigate object labels to notify on. Leave empty to match all.
-      default: [person]
+    label:
+      name: Label to Notify On
+      description: The Frigate object label to notify on. The automation triggers only on this label.
+      default: person
       selector:
         select:
-          multiple: true
+          multiple: false
           options:
             - person
             - dog
@@ -344,13 +344,15 @@ blueprint:
 # ── Trigger ──────────────────────────────────────────────────────────────────
 trigger_variables:
   input_camera: !input camera
-  camera: '{{ input_camera | replace(''camera.'', '''') }}'
+  camera: '{{ input_camera | replace(''camera.'', '''') | lower | replace(''-'',''_'') }}'
+  input_label: !input label
+  label: '{{ input_label | lower }}'
 
 trigger:
   - topic: frigate/events
-    payload: '{{ camera }}/new'
+    payload: '{{ camera }}/new/{{ label }}'
     value_template: >-
-      {{ value_json['after']['camera'] | lower | replace('-','_') }}/{{ value_json['type'] }}
+      {{ value_json['after']['camera'] | lower | replace('-','_') }}/{{ value_json['type'] }}/{{ value_json['after']['label'] }}
     id: frigate-event
     trigger: mqtt
 
@@ -377,12 +379,11 @@ actions:
       input_ha_port: !input ha_port
       input_frigate_url: !input frigate_url
       input_frigate_port: !input frigate_port
-      input_labels: !input labels
+      input_label: !input label
       input_mqtt_history_topic: !input mqtt_history_topic
       input_mqtt_history_limit: !input mqtt_history_limit
       input_mqtt_broker_sensor: !input mqtt_broker_sensor
       input_use_collage: !input use_collage
-      labels: '{{ input_labels | list | lower }}'
       object: '{{ trigger.payload_json[''after''][''label''] }}'
       label: '{{ object | title }}'
       raw_device: !input notify_device
@@ -416,10 +417,6 @@ actions:
       local_snapshot_path: '/config/www/frigate/frigate_event_{{ camera }}_{{ id }}.jpg'
       update_thumbnail: true
       alert_once: true
-
-  # ── Label filter ─────────────────────────────────────────────────────────────
-  - condition: template
-    value_template: '{{ not labels | length or object in labels }}'
 
   # ── Initial notification (fast, before AI runs) ───────────────────────────
   - repeat:

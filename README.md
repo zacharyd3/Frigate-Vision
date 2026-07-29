@@ -118,7 +118,7 @@ Then select `sensor.frigate_vision_history` as the **MQTT History Sensor Entity*
 | Section | Option | Description |
 |---|---|---|
 | — | Camera | Frigate camera entity to monitor |
-| — | Labels | Object types to notify on (person, dog, car, etc.) |
+| — | Label | Object type to notify on (person, dog, car, etc.) — the automation triggers only on this label |
 | — | Helper | `input_boolean` for AI job queuing |
 | — | Cooldown | Minimum time between notifications |
 | — | Mobile Device(s) | One or more devices to notify |
