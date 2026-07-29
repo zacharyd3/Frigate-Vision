@@ -21,6 +21,7 @@
 - **🚨 Listens for Frigate detection events** from any camera via MQTT
 - **🧠 Analyses snapshots with AI** using Home Assistant's `ai_task` domain — works with Ollama, OpenAI, Google, and any other provider you have configured
 - **📸 Optional multi-frame collage** — extracts 4 frames from the event clip and feeds them to the AI for richer temporal context
+- **📍 Zone-grounded analysis** — passes Frigate's detected zones (`entered_zones`/`current_zones`) into the AI prompt as authoritative location data, so the model describes where the subject actually was instead of guessing
 - **🕒 Per-camera cooldowns** to prevent notification spam
 - **📱 Instant + enriched notifications** — a fast initial push fires immediately, then a second enriched notification follows once AI analysis is complete
 - **🔔 Multi-device support** — send to one or more phones/tablets simultaneously
