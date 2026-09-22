@@ -122,9 +122,21 @@ blueprint:
           name: Use Frigate GenAI Summary
           description: >
             When Frigate generates a GenAI review summary (Frigate 0.17+ with
-            review -> genai enabled), update the notification with its title
-            and short summary. Has no effect if GenAI review summaries are not
+            review -> genai enabled), use its title as the notification title
+            (flagged with a warning icon if Frigate rates it as a potential
+            threat). Has no effect if GenAI review summaries are not
             configured in Frigate.
+          default: true
+          selector:
+            boolean: {}
+
+        summary_button:
+          name: Read Summary Button
+          description: >
+            Add a "Summary" button once Frigate's GenAI summary is in. Tapping
+            it swaps the notification for the full text (scene description and
+            observations) so you can read it right in the notification shade.
+            The button works for as long as the notification timeout below.
           default: true
           selector:
             boolean: {}
@@ -255,7 +267,7 @@ blueprint:
 # "update" where it first gains a matching severity, label or zone).
 # ---------------------------------------------------------------------------
 mode: parallel
-max: 20
+max: 100
 max_exceeded: silent
 
 triggers:
@@ -317,6 +329,7 @@ actions:
   - variables:
       input_notify_immediately: !input notify_immediately
       input_genai_summary: !input genai_summary
+      input_summary_button: !input summary_button
       input_sublabel: !input sublabel
       input_append: !input append
       input_expand: !input expand
@@ -375,6 +388,7 @@ actions:
           {% set buttons = buttons + [{'action': 'URI', 'title': 'Open in Frigate', 'uri': frigate_review_url}] %}
         {% endif %}
         {{ buttons }}
+      summary_action: FRIGATE_VISION_SUMMARY_{{ review_id }}
 
       max_wait_seconds: >
         {{ (input_max_review_wait.hours | default(0)) * 3600
@@ -382,10 +396,11 @@ actions:
            + (input_max_review_wait.seconds | default(0)) }}
 
       # State for the notification loop below
-      #   stage: active -> ended -> [summary ->] finish -> done
+      #   stage: active -> ended -> [summary ->] finish -> [tap -> finish ->] done
       stage: active
       send: "{{ input_notify_immediately }}"
       show_gif: false
+      show_summary: false
       alerted: false
       summary: {}
 
@@ -425,14 +440,57 @@ actions:
                     {% set s = (review.end_time - review.start_time) | round(0) | int %}
                     {{ '%d:%02d' | format(s // 60, s % 60) }}
                   {% endif %}
+                n_threat: "{{ summary.potential_threat_level | default(0, true) | int(0) }}"
                 n_title: >
-                  {% if summary.title | default('') %}{{ camera_name }}: {{ summary.title }}
-                  {% else %}{{ camera_name }}{% endif %}
+                  {% set t = summary.title | default('', true) or n_subject ~ ' detected' %}
+                  {{ ('🚨 ' if n_threat >= 2 else '⚠️ ' if n_threat == 1 else '') ~ t }}
+                # Collapsed: Frigate's one-line summary, or the camera and
+                # duration until it arrives. Expanded (Summary button): the
+                # full scene description and observations.
                 n_message: >
-                  {% if summary.shortSummary | default('') %}{{ summary.shortSummary }}
-                  {% else %}{{ n_subject }} detected{{ ' (' ~ n_duration ~ ')' if n_duration else '' }}{% endif %}
-                n_image: "{{ gif_url if show_gif else thumbnail_url_android }}"
-                n_attachment: "{{ gif_url if show_gif else thumbnail_url }}"
+                  {% if show_summary %}
+                    {% set ns = namespace(parts=[]) %}
+                    {% set scene = summary.scene | default('', true)
+                         or summary.shortSummary | default('', true) %}
+                    {% if scene %}{% set ns.parts = [scene] %}{% endif %}
+                    {% for key in ['observations', 'other_concerns'] %}
+                      {% set items = summary[key] | default([], true) %}
+                      {% set items = [items] if items is string else items %}
+                      {% if items %}
+                        {% set ns.parts = ns.parts
+                             + [items | map('regex_replace', '^', '• ') | join('\n')] %}
+                      {% endif %}
+                    {% endfor %}
+                    {{ ns.parts | join('\n\n') }}
+                  {% elif summary.shortSummary | default('', true) %}{{ summary.shortSummary }}
+                  {% else %}{{ camera_name }}{{ ' (' ~ n_duration ~ ')' if n_duration else '' }}{% endif %}
+                n_buttons: >
+                  {% set has_details = summary.scene | default('', true)
+                       or summary.observations | default([], true) %}
+                  {% if input_summary_button and has_details and not show_summary %}
+                    {{ [{'action': summary_action, 'title': 'Summary'}] + action_buttons }}
+                  {% else %}{{ action_buttons }}{% endif %}
+                # The expanded summary is sent without an image so Android
+                # shows the whole text instead of a one-line caption.
+                n_data: >
+                  {% set d = {
+                       'tag': review_id,
+                       'group': camera_name,
+                       'channel': camera_name ~ ' Notifications',
+                       'timeout': (input_notification_timeout * 60) | int,
+                       'ttl': 0,
+                       'priority': 'high',
+                       'alert_once': true,
+                       'clickAction': tap_url,
+                       'url': tap_url,
+                       'push': {'interruption-level': 'passive' if alerted else 'active'},
+                       'actions': n_buttons } %}
+                  {% if not show_summary %}
+                    {% set d = dict(d,
+                         image=gif_url if show_gif else thumbnail_url_android,
+                         attachment={'url': gif_url if show_gif else thumbnail_url}) %}
+                  {% endif %}
+                  {{ d }}
             - repeat:
                 for_each: "{{ notify_services }}"
                 sequence:
@@ -441,22 +499,7 @@ actions:
                     data:
                       title: "{{ n_title }}"
                       message: "{{ n_message }}"
-                      data:
-                        tag: "{{ review_id }}"
-                        group: "{{ camera_name }}"
-                        channel: "{{ camera_name }} Notifications"
-                        timeout: "{{ (input_notification_timeout * 60) | int }}"
-                        ttl: 0
-                        priority: high
-                        alert_once: true
-                        image: "{{ n_image }}"
-                        attachment:
-                          url: "{{ n_attachment }}"
-                        clickAction: "{{ tap_url }}"
-                        url: "{{ tap_url }}"
-                        push:
-                          interruption-level: "{{ 'passive' if alerted else 'active' }}"
-                        actions: "{{ action_buttons }}"
+                      data: "{{ n_data }}"
             - variables:
                 alerted: true
 
@@ -544,7 +587,35 @@ actions:
                     send: "{{ summary | count > 0 }}"
                     stage: finish
 
-          # finish: the last update (if any) was sent at the top of this pass
+            # Last update sent: if it has a Summary button, keep listening
+            # for it until the notification times out
+            - conditions: "{{ stage == 'finish' }}"
+              sequence:
+                - variables:
+                    has_details: >
+                      {{ summary.scene | default('', true) | length > 0
+                         or summary.observations | default([], true) | length > 0 }}
+                    stage: >
+                      {{ 'tap' if input_summary_button and has_details
+                         and not show_summary else 'done' }}
+                    send: false
+
+            # Summary tapped: re-send the notification with the full text
+            - conditions: "{{ stage == 'tap' }}"
+              sequence:
+                - wait_for_trigger:
+                    - trigger: event
+                      event_type: mobile_app_notification_action
+                      event_data:
+                        action: "{{ summary_action }}"
+                  timeout:
+                    minutes: "{{ input_notification_timeout }}"
+                  continue_on_timeout: true
+                - variables:
+                    show_summary: "{{ wait.trigger is not none }}"
+                    send: "{{ wait.trigger is not none }}"
+                    stage: "{{ 'finish' if wait.trigger else 'done' }}"
+
           default:
             - variables:
                 stage: done
