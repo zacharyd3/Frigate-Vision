@@ -1,0 +1,645 @@
+blueprint:
+  name: FrigateVision - Multi-Cam GIF (Beta)
+  description: >
+    Follows a subject (e.g. a person) across several Frigate cameras and keeps
+    it all in ONE notification. When the subject is picked up on one camera,
+    then another within the link window (default 60s), both belong to the same
+    event. The notification updates as they move ("Front Door → Back Yard"),
+    and once everyone is gone it is updated with a single GIF that cuts between
+    cameras. The GIF always shows the camera that most recently picked the
+    subject up, falling back to any camera that still sees them.
+
+
+    **Setup (one time):** copy `frigate_vision_gif.py` from the repository to
+    `/config/scripts/`, then add this to `configuration.yaml` and restart:
+
+
+    ```yaml
+
+    shell_command:
+      frigate_vision_gif: python3 /config/scripts/frigate_vision_gif.py {{ args }}
+    ```
+
+
+    GIFs are saved to `/config/www/frigate_vision/` and cleaned up after a
+    few days. Animated GIFs show in the notification shade on iOS and on
+    Android 14+.
+  domain: automation
+  homeassistant:
+    min_version: 2025.4.0
+  source_url: https://github.com/zacharyd3/Frigate-Vision/blob/beta/frigate_vision_multicam.yaml
+  input:
+
+    cameras:
+      name: Frigate Cameras
+      description: Cameras that belong to one area/route. Activity across these is merged.
+      selector:
+        entity:
+          domain: [camera]
+          multiple: true
+
+    notify_device:
+      name: Mobile Device(s)
+      description: Phone or tablet(s) with the Home Assistant app to notify.
+      selector:
+        device:
+          integration: mobile_app
+          multiple: true
+
+    frigate_api_url:
+      name: Frigate API URL (internal)
+      description: >
+        URL the GIF script uses to talk to Frigate from inside Home Assistant.
+        Use Frigate's unauthenticated internal port 5000, e.g.
+        http://ccab4aaf-frigate:5000 for the Frigate add-on or
+        http://192.168.1.20:5000 for a separate server.
+      default: http://ccab4aaf-frigate:5000
+      selector:
+        text: {}
+
+    filters:
+      name: Filters
+      icon: mdi:filter
+      collapsed: true
+      input:
+        labels:
+          name: Labels
+          description: Objects to follow.
+          default: [person]
+          selector:
+            select:
+              multiple: true
+              custom_value: true
+              sort: false
+              options:
+                - person
+                - car
+                - dog
+                - cat
+                - package
+                - bicycle
+                - motorcycle
+
+        zones:
+          name: Zones
+          description: >
+            Only count a tracked object once it has entered one of these
+            Frigate zones (from any of the cameras). Leave empty to ignore zones.
+          default: []
+          selector:
+            text:
+              multiple: true
+
+        cooldown:
+          name: Cooldown
+          description: Minimum time between the start of one event and the next.
+          default:
+            hours: 0
+            minutes: 0
+            seconds: 0
+          selector:
+            duration: {}
+
+    session_options:
+      name: Event Merging
+      icon: mdi:merge
+      collapsed: true
+      input:
+        link_window:
+          name: Link Window (seconds)
+          description: >
+            After the subject is gone from every camera, wait this long for
+            them to show up on another camera before closing the event.
+          default: 60
+          selector:
+            number:
+              min: 5
+              max: 300
+              step: 5
+              unit_of_measurement: seconds
+              mode: slider
+
+        max_session:
+          name: Maximum Event Length (minutes)
+          description: Close the event and build the GIF after this long no matter what.
+          default: 10
+          selector:
+            number:
+              min: 1
+              max: 60
+              step: 1
+              unit_of_measurement: minutes
+              mode: slider
+
+        check_interval:
+          name: Frigate Check Interval (seconds)
+          description: >
+            While objects are being tracked, ask Frigate this often whether
+            they have ended. Frigate does not publish anything for a subject
+            that stands still, so this catches missed "end" messages.
+          default: 30
+          selector:
+            number:
+              min: 10
+              max: 120
+              step: 5
+              unit_of_measurement: seconds
+              mode: slider
+
+    gif_options:
+      name: GIF Options
+      icon: mdi:file-gif-box
+      collapsed: true
+      input:
+        shell_command:
+          name: Shell Command
+          description: The shell_command you added for frigate_vision_gif.py.
+          default: shell_command.frigate_vision_gif
+          selector:
+            text: {}
+
+        gif_width:
+          name: GIF Width (px)
+          default: 480
+          selector:
+            number:
+              min: 240
+              max: 960
+              step: 40
+              unit_of_measurement: px
+              mode: slider
+
+        max_gif_seconds:
+          name: Maximum GIF Length (seconds)
+          description: Long events are sped up further so the GIF stays this short.
+          default: 20
+          selector:
+            number:
+              min: 5
+              max: 60
+              step: 1
+              unit_of_measurement: seconds
+              mode: slider
+
+        keep_days:
+          name: Keep GIFs (days)
+          description: Delete generated GIFs older than this. 0 keeps them forever.
+          default: 7
+          selector:
+            number:
+              min: 0
+              max: 90
+              step: 1
+              unit_of_measurement: days
+              mode: box
+
+    notification_options:
+      name: Notification Options
+      icon: mdi:message-image
+      collapsed: true
+      input:
+        notify_immediately:
+          name: Notify Immediately
+          description: >
+            ON = notify as soon as the subject is first seen and update the
+            notification as they move between cameras. OFF = stay quiet until
+            the GIF is ready and send only that.
+          default: true
+          selector:
+            boolean: {}
+
+        sublabel:
+          name: Show Recognized Names
+          description: Use names from face recognition / LPR, e.g. "Zach detected".
+          default: true
+          selector:
+            boolean: {}
+
+        append:
+          name: Append "Camera"
+          default: false
+          selector:
+            boolean: {}
+
+        expand:
+          name: Expand "Cam" to "Camera"
+          default: false
+          selector:
+            boolean: {}
+
+        notification_title:
+          name: Notification Group / Channel Name
+          description: Android channel and group name for these notifications.
+          default: Frigate Vision
+          selector:
+            text: {}
+
+        tap_action:
+          name: Tap Action
+          description: What opens when the notification itself is tapped.
+          default: gif
+          selector:
+            select:
+              options:
+                - label: The GIF (needs External Home Assistant URL; falls back to Frigate)
+                  value: gif
+                - label: Review in Frigate
+                  value: frigate
+                - label: Latest event clip
+                  value: clip
+
+        notification_timeout:
+          name: Notification Timeout (minutes)
+          default: 60
+          selector:
+            number:
+              min: 1
+              max: 1440
+              step: 1
+              unit_of_measurement: minutes
+              mode: box
+
+    advanced_options:
+      name: Advanced Options
+      icon: mdi:cog
+      collapsed: true
+      input:
+        base_url:
+          name: External Home Assistant URL
+          description: >
+            Public URL of Home Assistant including the port if needed. Used for
+            the "View Clip" button and for opening the GIF. Leave blank to open
+            links inside the companion app.
+          default: ""
+          selector:
+            text: {}
+
+        frigate_url:
+          name: External Frigate URL
+          description: Public URL of the Frigate UI for the "Open in Frigate" button. Blank hides it.
+          default: ""
+          selector:
+            text: {}
+
+        mqtt_topic:
+          name: Frigate Events MQTT Topic
+          description: Change only if you set a custom MQTT topic_prefix in Frigate.
+          default: frigate/events
+          selector:
+            text: {}
+
+# ---------------------------------------------------------------------------
+# One run follows the whole multi-camera event and listens to the events topic
+# itself, so new triggers are ignored while a run is active.
+# ---------------------------------------------------------------------------
+mode: single
+max_exceeded: silent
+
+triggers:
+  - trigger: mqtt
+    topic: !input mqtt_topic
+
+variables:
+  input_cameras: !input cameras
+  input_labels: !input labels
+  input_zones: !input zones
+  input_cooldown: !input cooldown
+
+  watched_cameras: "{{ input_cameras | map('replace', 'camera.', '') | list }}"
+  labels: "{{ input_labels | map('lower') | list }}"
+  zones: "{{ input_zones | map('lower') | list }}"
+
+  should_start: >
+    {% macro matches(o) -%}
+      {%- set cam_ok = (o.camera | default('') | lower | replace('-', '_')) in watched_cameras -%}
+      {%- set label_ok = not labels or (o.label | default('') | lower) in labels -%}
+      {%- set fp_ok = not o.false_positive | default(false) -%}
+      {%- set z = (o.entered_zones | default([]) or []) + (o.current_zones | default([]) or []) -%}
+      {%- set zone_ok = not zones or z | map('lower') | select('in', zones) | list | count > 0 -%}
+      {{- cam_ok and label_ok and fp_ok and zone_ok -}}
+    {%- endmacro %}
+    {% set p = trigger.payload_json | default({}) %}
+    {% if p.type | default('') == 'new' %}
+      {{ matches(p.after) == 'True' }}
+    {% elif p.type | default('') == 'update' %}
+      {{ matches(p.after) == 'True' and matches(p.before) != 'True' }}
+    {% else %}
+      {{ false }}
+    {% endif %}
+
+  cooldown_seconds: >
+    {{ (input_cooldown.days | default(0)) * 86400
+       + (input_cooldown.hours | default(0)) * 3600
+       + (input_cooldown.minutes | default(0)) * 60
+       + (input_cooldown.seconds | default(0)) }}
+
+conditions:
+  - condition: template
+    value_template: "{{ should_start }}"
+  - alias: Not already following an event
+    condition: template
+    value_template: "{{ this.attributes.current | default(0) == 0 }}"
+  - alias: Cooldown since the last event
+    condition: template
+    value_template: >
+      {{ cooldown_seconds == 0
+         or this.attributes.last_triggered is none
+         or now().timestamp() - as_timestamp(this.attributes.last_triggered, 0) >= cooldown_seconds }}
+
+actions:
+
+  # ── Inputs, static values and session state ─────────────────────────────────
+  - variables:
+      input_devices: !input notify_device
+      input_frigate_api_url: !input frigate_api_url
+      input_link_window: !input link_window
+      input_max_session: !input max_session
+      input_check_interval: !input check_interval
+      input_shell_command: !input shell_command
+      input_gif_width: !input gif_width
+      input_max_gif_seconds: !input max_gif_seconds
+      input_keep_days: !input keep_days
+      input_notify_immediately: !input notify_immediately
+      input_sublabel: !input sublabel
+      input_append: !input append
+      input_expand: !input expand
+      input_notification_title: !input notification_title
+      input_tap_action: !input tap_action
+      input_notification_timeout: !input notification_timeout
+      input_base_url: !input base_url
+      input_frigate_url: !input frigate_url
+
+      session_id: "{{ trigger.payload_json.after.id }}"
+      gif_name: >
+        {{ session_id | regex_replace('[^A-Za-z0-9-]', '') }}-{{ range(100000000, 999999999) | random }}
+
+      notify_services: >
+        {% set ns = namespace(services=[]) %}
+        {% for device in input_devices %}
+          {% set ns.services = ns.services
+               + ['notify.mobile_app_' ~ (device_attr(device, 'name') | slugify)] %}
+        {% endfor %}
+        {{ ns.services }}
+
+      ha_url: "{{ input_base_url | trim | regex_replace('/+$', '') }}"
+      frigate_ui_url: >
+        {% set f = input_frigate_url | trim | regex_replace('/+$', '') %}
+        {% if f %}{{ f }}/review{% endif %}
+      frigate_api: "{{ input_frigate_api_url | trim | regex_replace('/+$', '') }}"
+
+      # Each tracked object that is part of this event
+      tracks: >
+        {% set a = trigger.payload_json.after %}
+        {% set s = a.sub_label %}
+        {{ [{'id': a.id, 'camera': a.camera, 'label': a.label,
+             'start': a.start_time, 'end': a.end_time,
+             'sub': (s if s is string else (s[0] if s else ''))}] }}
+
+      started_at: "{{ now().timestamp() }}"
+      session_deadline: "{{ now().timestamp() + input_max_session * 60 }}"
+      next_check: "{{ now().timestamp() + input_check_interval }}"
+      idle_since: "{{ none }}"
+
+      #   stage: active -> build -> finish -> done
+      stage: active
+      send: "{{ input_notify_immediately }}"
+      alerted: false
+      gif_url: ""
+
+  # ── Event loop ──────────────────────────────────────────────────────────────
+  # Each pass (1) sends/updates the notification if `send` is set, then
+  # (2) does whatever the current stage needs. Every send uses the same tag,
+  # so the notification is replaced in place.
+  - repeat:
+      until:
+        - condition: template
+          value_template: "{{ stage == 'done' }}"
+      sequence:
+
+        - if:
+            - condition: template
+              value_template: "{{ send and notify_services | count > 0 }}"
+          then:
+            - variables:
+                ordered: "{{ tracks | sort(attribute='start') | list }}"
+                latest: "{{ ordered | last }}"
+                n_path: >
+                  {% set ns = namespace(path=[]) %}
+                  {% for t in ordered %}
+                    {% set name = t.camera | replace('_', ' ') | replace('-', ' ') | title %}
+                    {% if input_expand %}{% set name = name | regex_replace('(?i)\\bcam\\b', 'Camera') %}{% endif %}
+                    {% set name = name ~ (' Camera' if input_append else '') %}
+                    {% if not ns.path or ns.path[-1] != name %}{% set ns.path = ns.path + [name] %}{% endif %}
+                  {% endfor %}
+                  {{ ns.path | join(' → ') }}
+                n_subject: >
+                  {% set names = (tracks | map(attribute='sub') | reject('eq', '') | unique | list)
+                       if input_sublabel else [] %}
+                  {% set things = tracks | map(attribute='label') | map('replace', '_', ' ') | unique | list %}
+                  {% set items = names if names else things %}
+                  {% if items | count > 1 %}
+                    {% set text = items[:-1] | join(', ') ~ ' and ' ~ items[-1] %}
+                  {% else %}
+                    {% set text = items | first | default('activity') %}
+                  {% endif %}
+                  {{ text[:1] | upper ~ text[1:] }}
+                n_duration: >
+                  {% set ends = tracks | map(attribute='end') | reject('none') | list %}
+                  {% if gif_url and ends %}
+                    {% set s = ((ends | max) - (tracks | map(attribute='start') | min)) | round(0) | int %}
+                    {{ '%d:%02d' | format(s // 60, s % 60) }}
+                  {% endif %}
+                n_message: "{{ n_path }}{{ ' · ' ~ n_duration if n_duration else '' }}"
+                n_image: >
+                  {% if gif_url %}{{ gif_url }}
+                  {% else %}/api/frigate/notifications/{{ latest.id }}/thumbnail.jpg?format=android{% endif %}
+                n_attachment: >
+                  {% if gif_url %}{{ gif_url }}
+                  {% else %}/api/frigate/notifications/{{ latest.id }}/thumbnail.jpg{% endif %}
+                n_clip: >
+                  {{ ha_url }}/api/frigate/notifications/{{ latest.id }}/{{ latest.camera }}/clip.mp4
+                n_tap: >
+                  {% if input_tap_action == 'gif' and gif_url and gif_url.startswith('/local/') and ha_url %}{{ ha_url ~ gif_url }}
+                  {% elif input_tap_action != 'clip' and frigate_ui_url %}{{ frigate_ui_url }}
+                  {% else %}{{ n_clip }}{% endif %}
+                n_actions: >
+                  {% set buttons = [{'action': 'URI', 'title': 'View Clip', 'uri': n_clip}] %}
+                  {% if frigate_ui_url %}
+                    {% set buttons = buttons + [{'action': 'URI', 'title': 'Open in Frigate', 'uri': frigate_ui_url}] %}
+                  {% endif %}
+                  {{ buttons }}
+            - repeat:
+                for_each: "{{ notify_services }}"
+                sequence:
+                  - action: "{{ repeat.item }}"
+                    continue_on_error: true
+                    data:
+                      title: "{{ n_subject }} detected"
+                      message: "{{ n_message }}"
+                      data:
+                        tag: "{{ session_id }}"
+                        group: "{{ input_notification_title }}"
+                        channel: "{{ input_notification_title }}"
+                        timeout: "{{ (input_notification_timeout * 60) | int }}"
+                        ttl: 0
+                        priority: high
+                        alert_once: true
+                        image: "{{ n_image }}"
+                        attachment:
+                          url: "{{ n_attachment }}"
+                        clickAction: "{{ n_tap }}"
+                        url: "{{ n_tap }}"
+                        push:
+                          interruption-level: "{{ 'passive' if alerted else 'active' }}"
+                        actions: "{{ n_actions }}"
+            - variables:
+                alerted: true
+
+        - choose:
+
+            # ── active: collect tracks until everyone is gone ────────────────
+            - conditions: "{{ stage == 'active' }}"
+              sequence:
+                - variables:
+                    active_count: "{{ tracks | selectattr('end', 'none') | list | count }}"
+                    deadline: >
+                      {% if active_count > 0 %}{{ [next_check, session_deadline] | min }}
+                      {% else %}{{ [(idle_since if idle_since is not none else now().timestamp())
+                                    + input_link_window, session_deadline] | min }}{% endif %}
+                    send: false
+                - wait_for_trigger:
+                    - trigger: mqtt
+                      topic: !input mqtt_topic
+                  timeout:
+                    seconds: "{{ [deadline - now().timestamp(), 1] | max }}"
+                  continue_on_timeout: true
+
+                - if:
+                    - condition: template
+                      value_template: "{{ wait.trigger is not none }}"
+                  then:
+                    # A Frigate message: update a known track or add a new one
+                    - variables:
+                        msg: "{{ wait.trigger.payload_json | default({}) }}"
+                        before_path: "{{ tracks | map(attribute='camera') | unique | list }}"
+                        before_names: "{{ tracks | map(attribute='sub') | reject('eq', '') | list }}"
+                        tracks: >
+                          {% macro matches(o) -%}
+                            {%- set cam_ok = (o.camera | default('') | lower | replace('-', '_')) in watched_cameras -%}
+                            {%- set label_ok = not labels or (o.label | default('') | lower) in labels -%}
+                            {%- set fp_ok = not o.false_positive | default(false) -%}
+                            {%- set z = (o.entered_zones | default([]) or []) + (o.current_zones | default([]) or []) -%}
+                            {%- set zone_ok = not zones or z | map('lower') | select('in', zones) | list | count > 0 -%}
+                            {{- cam_ok and label_ok and fp_ok and zone_ok -}}
+                          {%- endmacro %}
+                          {% set a = msg.after | default({}) %}
+                          {% set s = a.sub_label | default(none) %}
+                          {% set sub = s if s is string else (s[0] if s else '') %}
+                          {% set ns = namespace(out=[], found=false) %}
+                          {% for t in tracks %}
+                            {% if t.id == a.id %}
+                              {% set ns.found = true %}
+                              {% set ns.out = ns.out + [dict(t, end=a.end_time, sub=(sub or t.sub))] %}
+                            {% else %}
+                              {% set ns.out = ns.out + [t] %}
+                            {% endif %}
+                          {% endfor %}
+                          {% if not ns.found and a.id is defined and matches(a) == 'True' %}
+                            {% set ns.out = ns.out + [{'id': a.id, 'camera': a.camera, 'label': a.label,
+                                'start': a.start_time, 'end': a.end_time, 'sub': sub}] %}
+                          {% endif %}
+                          {{ ns.out }}
+                        send: >
+                          {{ input_notify_immediately and (
+                               (tracks | map(attribute='camera') | unique | list) != before_path
+                               or (tracks | map(attribute='sub') | reject('eq', '') | list) != before_names) }}
+                  else:
+                    - if:
+                        - condition: template
+                          value_template: >
+                            {{ tracks | selectattr('end', 'none') | list | count > 0
+                               and now().timestamp() >= next_check
+                               and now().timestamp() < session_deadline }}
+                      then:
+                        # Nothing heard for a while: ask Frigate which tracks have ended
+                        - action: "{{ input_shell_command }}"
+                          continue_on_error: true
+                          data:
+                            args: >-
+                              --mode check --frigate {{ frigate_api }}
+                              --tracks {% for t in tracks %}{{ t.camera }}|{{ t.id }}|{{ t.start }}|{{ t.end if t.end is not none else '' }}{{ ';' if not loop.last }}{% endfor %}
+                          response_variable: check_response
+                        - variables:
+                            checked: >
+                              {% if check_response is defined and check_response.stdout | default('') | trim %}
+                                {{ (check_response.stdout | from_json).tracks | default({}) }}
+                              {% else %}{{ {} }}{% endif %}
+                            tracks: >
+                              {% set ns = namespace(out=[]) %}
+                              {% for t in tracks %}
+                                {% if t.id in checked %}
+                                  {% set ns.out = ns.out + [dict(t, end=checked[t.id].end)] %}
+                                {% else %}
+                                  {% set ns.out = ns.out + [t] %}
+                                {% endif %}
+                              {% endfor %}
+                              {{ ns.out }}
+                            next_check: "{{ now().timestamp() + input_check_interval }}"
+
+                # Close the event once everyone has been gone for the link
+                # window, or when it has run too long.
+                - variables:
+                    active_count: "{{ tracks | selectattr('end', 'none') | list | count }}"
+                    idle_since: >
+                      {% if active_count > 0 %}{{ none }}
+                      {% elif idle_since is none %}{{ now().timestamp() }}
+                      {% else %}{{ idle_since }}{% endif %}
+                    stage: >
+                      {% if now().timestamp() >= session_deadline %}build
+                      {% elif idle_since is not none and now().timestamp() >= idle_since + input_link_window %}build
+                      {% else %}active{% endif %}
+
+            # ── build: stitch the GIF across cameras ────────────────────────
+            - conditions: "{{ stage == 'build' }}"
+              sequence:
+                - action: "{{ input_shell_command }}"
+                  continue_on_error: true
+                  data:
+                    args: >-
+                      --mode build --frigate {{ frigate_api }} --name {{ gif_name }}
+                      --width {{ input_gif_width | int }} --max-gif-seconds {{ input_max_gif_seconds | int }}
+                      --keep-days {{ input_keep_days | int }}
+                      --tracks {% for t in tracks %}{{ t.camera }}|{{ t.id }}|{{ t.start }}|{{ t.end if t.end is not none else '' }}{{ ';' if not loop.last }}{% endfor %}
+                  response_variable: build_response
+                - variables:
+                    build_result: >
+                      {% if build_response is defined and build_response.stdout | default('') | trim %}
+                        {{ build_response.stdout | from_json }}
+                      {% else %}{{ {} }}{% endif %}
+                    # Fall back to Frigate's own (single camera) GIF of the first track
+                    gif_url: >
+                      {% if build_result.url | default('') %}{{ build_result.url }}
+                      {% else %}
+                        {% set first_track = tracks | sort(attribute='start') | first %}
+                        /api/frigate/notifications/{{ first_track.id }}/event_preview.gif
+                      {% endif %}
+                    send: true
+                    stage: finish
+                - if:
+                    - condition: template
+                      value_template: "{{ not build_result.url | default('') }}"
+                  then:
+                    - action: system_log.write
+                      data:
+                        level: warning
+                        logger: frigate_vision
+                        message: >
+                          Multi-cam GIF build failed, using Frigate's event GIF instead:
+                          {{ (build_response.stdout | default('') ~ ' ' ~ build_response.stderr | default(''))
+                             if build_response is defined else 'shell_command did not respond' }}
+
+          # finish: the final update was sent at the top of this pass
+          default:
+            - variables:
+                stage: done
+                send: false

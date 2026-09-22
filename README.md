@@ -16,6 +16,40 @@
 
 ---
 
+## 🎞️ New Beta: Multi-Cam GIF Notifications
+
+[![Import the Multi-Cam GIF blueprint.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fzacharyd3%2FFrigate-Vision%2Fblob%2Fbeta%2Ffrigate_vision_multicam.yaml)
+
+`frigate_vision_multicam.yaml` follows a subject across several cameras and keeps it all in **one notification**, ending with **one GIF** that cuts between cameras as they move.
+
+1. **🚶 First sighting.** A person is picked up on, say, the Front Door. You get a notification with their thumbnail.
+2. **🔀 They move.** The Back Yard picks them up. Because this is within the **link window** (default 60s after they were last seen anywhere), it's the same event. The notification updates silently to *"Front Door → Back Yard"*. Recognized names (face/LPR) update the title, e.g. *"Zach detected"*.
+3. **🎞️ They're gone.** Once no camera has seen them for the link window, `frigate_vision_gif.py` asks Frigate for each camera's preview GIF for its part of the timeline, then stitches the parts together. The notification updates with the result and the total time, e.g. *"Front Door → Back Yard · 0:50"*.
+
+**Which camera the GIF shows:** at any moment it shows the camera that **most recently picked the subject up**. Walk up the driveway and appear on the Back Yard while the Front Door still sees you, and it cuts to the Back Yard. If the Back Yard then loses you while the Front Door still has you, it cuts back. Stretches where nobody is visible are skipped, and blips under 2s are ignored.
+
+It uses Frigate's tracked-object messages (`frigate/events`). Frigate publishes nothing for someone standing still, so while anything is being tracked the blueprint also asks Frigate directly (every 30s by default) whether it has ended.
+
+### Setup
+
+1. Copy [`frigate_vision_gif.py`](frigate_vision_gif.py) to `/config/scripts/`. It needs only Python and ffmpeg, which Home Assistant already includes.
+2. Add this to `configuration.yaml` and restart:
+   ```yaml
+   shell_command:
+     frigate_vision_gif: python3 /config/scripts/frigate_vision_gif.py {{ args }}
+   ```
+3. Import the blueprint. Set **Frigate API URL (internal)** to Frigate's port 5000, e.g. `http://ccab4aaf-frigate:5000` for the add-on or `http://<frigate-ip>:5000` for a separate server.
+
+### Good to know
+
+* GIFs are written to `/config/www/frigate_vision/` (served at `/local/frigate_vision/`) with a random suffix in the name, and deleted after 7 days by default. Files under `/local/` don't need a login to view, so treat the links accordingly.
+* The GIF is built from Frigate's low-resolution previews and sped up like Frigate's own previews. Long events are sped up further to stay under 20s (configurable). It shrinks automatically if it would exceed the ~10MB notification limit.
+* If the GIF can't be built, the notification falls back to Frigate's own single-camera GIF of the first track, and the reason is logged under `frigate_vision` in the Home Assistant log.
+* One run follows one event, so use one automation per group of cameras that should merge (e.g. the outside of the house).
+* Requires Home Assistant 2025.4+. Animated GIFs play in the notification shade on iOS and Android 14+.
+
+---
+
 ## 💡 What Frigate Vision Does
 
 - **🚨 Listens for Frigate detection events** from any camera via MQTT
@@ -144,6 +178,8 @@ Then select `sensor.frigate_vision_history` as the **MQTT History Sensor Entity*
 
 ```
 frigate_vision.yaml          # The blueprint — import this into Home Assistant
+frigate_vision_multicam.yaml # Beta: multi-camera events with a stitched GIF
+frigate_vision_gif.py        # GIF stitcher used by the multi-cam blueprint (goes in /config/scripts/)
 scripts/
   frigate_collage.sh         # Builds a single-row multi-frame collage from a Frigate clip
   extract_frigate_frames.sh  # Extracts 3 individual frames (lightweight alternative)
