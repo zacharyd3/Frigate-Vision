@@ -111,7 +111,7 @@ blueprint:
         notify_immediately:
           name: Notify Immediately
           description: >
-            ON = send a notification with a thumbnail as soon as the review
+            ON = send a notification with a snapshot as soon as the review
             starts, then update it with the GIF when the activity ends.
             OFF = stay quiet until the GIF is ready and send only that.
           default: true
@@ -363,12 +363,11 @@ actions:
 
       # Images (relative paths are resolved by the companion app)
       gif_url: /api/frigate/notifications/{{ review_id }}/review_preview.gif
-      thumbnail_url: >
-        {% if event_id %}/api/frigate/notifications/{{ event_id }}/thumbnail.jpg
+      # Full-frame snapshot (same aspect ratio as the camera and the GIF)
+      # rather than the square object thumbnail
+      snapshot_url: >
+        {% if event_id %}/api/frigate/notifications/{{ event_id }}/snapshot.jpg
         {% else %}/api/frigate/notifications/{{ review_id }}/{{ camera }}/review_thumbnail.webp{% endif %}
-      thumbnail_url_android: >
-        {% if event_id %}/api/frigate/notifications/{{ event_id }}/thumbnail.jpg?format=android
-        {% else %}{{ thumbnail_url }}{% endif %}
 
       # Links
       clip_url: >
@@ -487,8 +486,8 @@ actions:
                        'actions': n_buttons } %}
                   {% if not show_summary %}
                     {% set d = dict(d,
-                         image=gif_url if show_gif else thumbnail_url_android,
-                         attachment={'url': gif_url if show_gif else thumbnail_url}) %}
+                         image=gif_url if show_gif else snapshot_url,
+                         attachment={'url': gif_url if show_gif else snapshot_url}) %}
                   {% endif %}
                   {{ d }}
             - repeat:
