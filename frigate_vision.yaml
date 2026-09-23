@@ -273,6 +273,17 @@ blueprint:
               unit_of_measurement: seconds
               mode: slider
 
+        gif_button:
+          name: "Debug: View GIF Button"
+          description: >
+            Add a "View GIF" button once the GIF is ready. It opens the GIF
+            full size, so you can check its real size and shape compared with
+            how the notification shows it. Android shows at most 3 buttons, so
+            with this on, "Open in Frigate" may be pushed off.
+          default: false
+          selector:
+            boolean: {}
+
 # ---------------------------------------------------------------------------
 # Each Frigate review item gets its own run, so several cameras can be active
 # at once. Every message on the reviews topic is evaluated, but a run only
@@ -354,6 +365,7 @@ actions:
       input_gif_delay: !input gif_delay
       input_square_gif_command: !input square_gif_command
       input_genai_timeout: !input genai_timeout
+      input_gif_button: !input gif_button
 
       review: "{{ trigger.payload_json.after }}"
       review_id: "{{ review.id }}"
@@ -402,6 +414,8 @@ actions:
         {% endif %}
         {{ buttons }}
       summary_action: FRIGATE_VISION_SUMMARY_{{ review_id }}
+      gif_open_url: >
+        {{ input_base_url | trim | regex_replace('/+$', '') }}{{ gif_url }}
 
       max_wait_seconds: >
         {{ (input_max_review_wait.hours | default(0)) * 3600
@@ -480,9 +494,14 @@ actions:
                 n_buttons: >
                   {% set has_details = summary.scene | default('', true)
                        or summary.observations | default([], true) %}
+                  {% set b = action_buttons %}
                   {% if input_summary_button and has_details and not show_summary %}
-                    {{ [{'action': summary_action, 'title': 'Summary'}] + action_buttons }}
-                  {% else %}{{ action_buttons }}{% endif %}
+                    {% set b = [{'action': summary_action, 'title': 'Summary'}] + b %}
+                  {% endif %}
+                  {% if input_gif_button and show_gif %}
+                    {% set b = [{'action': 'URI', 'title': 'View GIF', 'uri': gif_open_url}] + b %}
+                  {% endif %}
+                  {{ b[:3] }}
                 # The expanded summary is sent without an image so Android
                 # shows the whole text instead of a one-line caption.
                 n_data: >
