@@ -363,12 +363,11 @@ actions:
 
       # Images (relative paths are resolved by the companion app)
       gif_url: /api/frigate/notifications/{{ review_id }}/review_preview.gif
+      # Square object thumbnail. Deliberately not ?format=android, which pads
+      # it out to a wide 2:1 image with bars on either side.
       thumbnail_url: >
         {% if event_id %}/api/frigate/notifications/{{ event_id }}/thumbnail.jpg
         {% else %}/api/frigate/notifications/{{ review_id }}/{{ camera }}/review_thumbnail.webp{% endif %}
-      thumbnail_url_android: >
-        {% if event_id %}/api/frigate/notifications/{{ event_id }}/thumbnail.jpg?format=android
-        {% else %}{{ thumbnail_url }}{% endif %}
 
       # Links
       clip_url: >
@@ -487,7 +486,7 @@ actions:
                        'actions': n_buttons } %}
                   {% if not show_summary %}
                     {% set d = dict(d,
-                         image=gif_url if show_gif else thumbnail_url_android,
+                         image=gif_url if show_gif else thumbnail_url,
                          attachment={'url': gif_url if show_gif else thumbnail_url}) %}
                   {% endif %}
                   {{ d }}
