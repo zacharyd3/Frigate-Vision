@@ -51,6 +51,7 @@ Every update replaces the same notification, and only the first one makes a soun
 * **Severity**: Frigate decides what counts as an *alert* (`review -> alerts -> labels / required_zones` in your Frigate config). Tuning that in Frigate is usually cleaner than filtering in the blueprint.
 * **GIF delay**: Frigate pads the review GIF with about 8s after the activity ends. The default 10s delay makes sure the whole clip is included.
 * **Per-camera cooldowns**: the cooldown applies to the whole automation. Create one automation per camera if you want each camera to cool down on its own.
+* **Taller image on Android**: Android gives an expanded notification a fixed height, and the image gets whatever the text and buttons leave, so tall (hallway-mode) cameras get cropped. Set *Notification Text* to *Image only* (no title or text at all) and remove *Action Buttons* you don't need to give the image as much room as possible. Tapping the notification still opens the review in Frigate, where the GenAI summary is shown.
 * **Custom topic prefix**: if you changed Frigate's MQTT `topic_prefix`, update *Frigate Reviews MQTT Topic* in Advanced Options.
 
 #### 📱 Portrait (9:16) cameras

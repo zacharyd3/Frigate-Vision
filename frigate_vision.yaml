@@ -130,16 +130,46 @@ blueprint:
           selector:
             boolean: {}
 
-        summary_button:
-          name: Read Summary Button
+        message_style:
+          name: Notification Text
           description: >
-            Add a "Summary" button once Frigate's GenAI summary is in. Tapping
-            it swaps the notification for the full text (scene description and
-            observations) so you can read it right in the notification shade.
-            The button works for as long as the notification timeout below.
-          default: true
+            Android gives an expanded notification a fixed height, so every
+            line of text takes room away from the image. "Image only" sends no
+            title or text at all, for the biggest possible image; tap the
+            notification to see the details in Frigate. The camera still
+            shows as the notification group.
+          default: summary
           selector:
-            boolean: {}
+            select:
+              options:
+                - label: GenAI short summary (camera and duration until it arrives)
+                  value: summary
+                - label: Image only (no title or text)
+                  value: image
+
+        buttons:
+          name: Action Buttons
+          description: >
+            Buttons to show on the notification (Android shows at most 3).
+            Like the text, the button row takes height away from the image;
+            pick none for the tallest image. "Summary" appears once Frigate's
+            GenAI summary is in and swaps the notification for the full text
+            (scene description and observations). It works for as long as the
+            notification timeout below. "View GIF" opens the GIF full size.
+          default: [summary, clip, frigate]
+          selector:
+            select:
+              multiple: true
+              sort: false
+              options:
+                - label: Summary
+                  value: summary
+                - label: View GIF
+                  value: gif
+                - label: View Clip
+                  value: clip
+                - label: Open in Frigate (needs the External Frigate URL)
+                  value: frigate
 
         sublabel:
           name: Show Recognized Names
@@ -273,17 +303,6 @@ blueprint:
               unit_of_measurement: seconds
               mode: slider
 
-        gif_button:
-          name: "Debug: View GIF Button"
-          description: >
-            Add a "View GIF" button once the GIF is ready. It opens the GIF
-            full size, so you can check its real size and shape compared with
-            how the notification shows it. Android shows at most 3 buttons, so
-            with this on, "Open in Frigate" may be pushed off.
-          default: false
-          selector:
-            boolean: {}
-
 # ---------------------------------------------------------------------------
 # Each Frigate review item gets its own run, so several cameras can be active
 # at once. Every message on the reviews topic is evaluated, but a run only
@@ -353,7 +372,9 @@ actions:
   - variables:
       input_notify_immediately: !input notify_immediately
       input_genai_summary: !input genai_summary
-      input_summary_button: !input summary_button
+      input_message_style: !input message_style
+      input_buttons: !input buttons
+      input_summary_button: "{{ 'summary' in input_buttons }}"
       input_sublabel: !input sublabel
       input_append: !input append
       input_expand: !input expand
@@ -365,7 +386,6 @@ actions:
       input_gif_delay: !input gif_delay
       input_square_gif_command: !input square_gif_command
       input_genai_timeout: !input genai_timeout
-      input_gif_button: !input gif_button
 
       review: "{{ trigger.payload_json.after }}"
       review_id: "{{ review.id }}"
@@ -406,14 +426,15 @@ actions:
         {% else %}{{ clip_url or frigate_review_url }}{% endif %}
       action_buttons: >
         {% set buttons = [] %}
-        {% if clip_url %}
+        {% if clip_url and 'clip' in input_buttons %}
           {% set buttons = buttons + [{'action': 'URI', 'title': 'View Clip', 'uri': clip_url}] %}
         {% endif %}
-        {% if frigate_review_url %}
+        {% if frigate_review_url and 'frigate' in input_buttons %}
           {% set buttons = buttons + [{'action': 'URI', 'title': 'Open in Frigate', 'uri': frigate_review_url}] %}
         {% endif %}
         {{ buttons }}
       summary_action: FRIGATE_VISION_SUMMARY_{{ review_id }}
+      zero_width_space: "\u200B"
       gif_open_url: >
         {{ input_base_url | trim | regex_replace('/+$', '') }}{{ gif_url }}
 
@@ -471,9 +492,9 @@ actions:
                 n_title: >
                   {% set t = summary.title | default('', true) or n_subject ~ ' detected' %}
                   {{ ('🚨 ' if n_threat >= 2 else '⚠️ ' if n_threat == 1 else '') ~ t }}
-                # Collapsed: Frigate's one-line summary, or the camera and
-                # duration until it arrives. Expanded (Summary button): the
-                # full scene description and observations.
+                # Frigate's short summary, or the camera and duration until it
+                # arrives. After the Summary button: the full scene description
+                # and observations. Not used in "Image only" mode.
                 n_message: >
                   {% if show_summary %}
                     {% set ns = namespace(parts=[]) %}
@@ -489,7 +510,8 @@ actions:
                       {% endif %}
                     {% endfor %}
                     {{ ns.parts | join('\n\n') }}
-                  {% elif summary.shortSummary | default('', true) %}{{ summary.shortSummary }}
+                  {% elif input_message_style == 'summary'
+                       and summary.shortSummary | default('', true) %}{{ summary.shortSummary }}
                   {% else %}{{ camera_name }}{{ ' (' ~ n_duration ~ ')' if n_duration else '' }}{% endif %}
                 n_buttons: >
                   {% set has_details = summary.scene | default('', true)
@@ -498,7 +520,7 @@ actions:
                   {% if input_summary_button and has_details and not show_summary %}
                     {% set b = [{'action': summary_action, 'title': 'Summary'}] + b %}
                   {% endif %}
-                  {% if input_gif_button and show_gif %}
+                  {% if 'gif' in input_buttons and show_gif %}
                     {% set b = [{'action': 'URI', 'title': 'View GIF', 'uri': gif_open_url}] + b %}
                   {% endif %}
                   {{ b[:3] }}
@@ -523,15 +545,19 @@ actions:
                          attachment={'url': gif_url if show_gif else thumbnail_url}) %}
                   {% endif %}
                   {{ d }}
+                # "Image only": no title, and a zero-width space as the message
+                # (a message is required, and some phones drop a blank one)
+                n_image_only: "{{ input_message_style == 'image' and not show_summary }}"
+                n_service_data: >
+                  {% set d = {'message': zero_width_space if n_image_only else n_message,
+                              'data': n_data} %}
+                  {{ d if n_image_only else dict(d, title=n_title) }}
             - repeat:
                 for_each: "{{ notify_services }}"
                 sequence:
                   - action: "{{ repeat.item }}"
                     continue_on_error: true
-                    data:
-                      title: "{{ n_title }}"
-                      message: "{{ n_message }}"
-                      data: "{{ n_data }}"
+                    data: "{{ n_service_data }}"
             - variables:
                 alerted: true
 
