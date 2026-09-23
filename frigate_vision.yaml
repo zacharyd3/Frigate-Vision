@@ -134,16 +134,18 @@ blueprint:
           name: Notification Text
           description: >
             Android gives an expanded notification a fixed height, so every
-            line of text takes room away from the image. "Camera only" keeps
-            the text to one line for a taller image.
+            line of text takes room away from the image. "Image only" sends no
+            title or text at all, for the biggest possible image; tap the
+            notification to see the details in Frigate. The camera still
+            shows as the notification group.
           default: summary
           selector:
             select:
               options:
                 - label: GenAI short summary (camera and duration until it arrives)
                   value: summary
-                - label: Camera only (camera and duration, one line)
-                  value: camera
+                - label: Image only (no title or text)
+                  value: image
 
         buttons:
           name: Action Buttons
@@ -432,6 +434,7 @@ actions:
         {% endif %}
         {{ buttons }}
       summary_action: FRIGATE_VISION_SUMMARY_{{ review_id }}
+      zero_width_space: "\u200B"
       gif_open_url: >
         {{ input_base_url | trim | regex_replace('/+$', '') }}{{ gif_url }}
 
@@ -489,9 +492,9 @@ actions:
                 n_title: >
                   {% set t = summary.title | default('', true) or n_subject ~ ' detected' %}
                   {{ ('🚨 ' if n_threat >= 2 else '⚠️ ' if n_threat == 1 else '') ~ t }}
-                # Normally Frigate's short summary (or the camera and duration
-                # until it arrives, or always with "Camera only"). After the
-                # Summary button: the full scene description and observations.
+                # Frigate's short summary, or the camera and duration until it
+                # arrives. After the Summary button: the full scene description
+                # and observations. Not used in "Image only" mode.
                 n_message: >
                   {% if show_summary %}
                     {% set ns = namespace(parts=[]) %}
@@ -542,15 +545,19 @@ actions:
                          attachment={'url': gif_url if show_gif else thumbnail_url}) %}
                   {% endif %}
                   {{ d }}
+                # "Image only": no title, and a zero-width space as the message
+                # (a message is required, and some phones drop a blank one)
+                n_image_only: "{{ input_message_style == 'image' and not show_summary }}"
+                n_service_data: >
+                  {% set d = {'message': zero_width_space if n_image_only else n_message,
+                              'data': n_data} %}
+                  {{ d if n_image_only else dict(d, title=n_title) }}
             - repeat:
                 for_each: "{{ notify_services }}"
                 sequence:
                   - action: "{{ repeat.item }}"
                     continue_on_error: true
-                    data:
-                      title: "{{ n_title }}"
-                      message: "{{ n_message }}"
-                      data: "{{ n_data }}"
+                    data: "{{ n_service_data }}"
             - variables:
                 alerted: true
 
