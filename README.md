@@ -77,6 +77,8 @@ A camera that doesn't match the frame sits on a blurred copy of itself (like pho
 
 **What you get, in order:** a thumbnail as soon as the journey starts, updated silently as the object reaches more cameras. When the journey ends, the notification updates with Frigate's own GIF of the first camera. Once the journey GIF is built, it replaces that GIF in place. If the journey GIF can't be built, the Frigate GIF stays and a warning explains why in the Home Assistant log.
 
+**Frigate GenAI (optional).** Set *Notification Title* and/or *Notification Text* to *Advanced* to use Frigate's [GenAI review summaries](https://docs.frigate.video/configuration/genai/review_summaries) (Frigate 0.17+). You can mix them, e.g. the GenAI title with the cameras as the text. Each camera's review in a journey can get its own summary. The notification uses the one Frigate rates as the biggest potential threat (with ⚠️/🚨 on the title), or the first camera's if they're rated the same. Until a summary arrives, the title says what was detected and the text lists the cameras. A summary that arrives after the GIF still updates the notification, silently, for up to the *GenAI Summary Timeout* (90s by default).
+
 #### Setup (one time)
 
 Frigate only makes GIFs of one review on one camera, so the journey GIF is built by a small Python script run by Home Assistant. It uses the `python3` and `ffmpeg` that already come with Home Assistant, so nothing else needs installing.
@@ -97,7 +99,7 @@ Frigate only makes GIFs of one review on one camera, so the journey GIF is built
 * **GIF size:** iOS only shows images up to 10 MB in notifications. The defaults (640px, 8 fps, 2x speed, 20s max) stay well under that. *Blurred* backgrounds make bigger files than *Black*.
 * **Where the GIFs live:** in `/config/www/frigate_vision/`. They are deleted after 48 hours, or after the notification timeout if that's longer. Like everything under `/local/`, they can be opened without logging in by anyone who can reach your Home Assistant and knows the file name. The names include a random part, so they can't be guessed.
 * **Troubleshooting:** each GIF has a log in `/config/frigate_vision/jobs/`, named in the Home Assistant log warning.
-* **Not in this version (yet):** zone filters, the GenAI summary, and pulling in a camera's review from *before* the journey started (e.g. a car on the street "detection" before the person at the door "alert"). Add *Detection* to *Review Severity* if you want those to start a journey.
+* **Not in this version (yet):** zone filters, the *Summary* button with GenAI's full description, and pulling in a camera's review from *before* the journey started (e.g. a car on the street "detection" before the person at the door "alert"). Add *Detection* to *Review Severity* if you want those to start a journey.
 
 ---
 
