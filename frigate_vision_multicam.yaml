@@ -1,0 +1,1018 @@
+blueprint:
+  name: FrigateVision - Multi-Camera Journeys
+  description: >
+    Follows an object as it moves between your cameras and sends one
+    notification for the whole "journey", with a custom animated GIF built
+    from the recordings that cuts from one camera to the next as the object
+    moves (e.g. Street -> Driveway -> Front Door).
+
+
+    Reviews on your cameras are linked into one journey when they are for the
+    same kind of object (person, car, dog...) and each one starts within the
+    Link Gap of the previous one ending. A journey that stays on one camera
+    gets a one-camera GIF, so use this instead of the regular Frigate Vision
+    blueprint for these cameras.
+
+
+    Needs a one-time setup: copy frigate_vision_multicam.py to
+    /config/frigate_vision/ and add this to configuration.yaml, then restart:
+
+
+    shell_command:
+      frigate_vision_multicam: "python3 /config/frigate_vision/frigate_vision_multicam.py {{ args }}"
+
+
+    See the README for details. If the GIF can't be built, the notification
+    falls back to Frigate's own GIF of the first camera.
+  domain: automation
+  homeassistant:
+    min_version: 2025.4.0
+  source_url: https://github.com/zacharyd3/Frigate-Vision/blob/main/frigate_vision_multicam.yaml
+  input:
+
+    cameras:
+      name: Frigate Cameras
+      description: >
+        Frigate camera entities to follow objects across. A journey can move
+        between any of these cameras.
+      selector:
+        entity:
+          domain: [camera]
+          multiple: true
+
+    notify_device:
+      name: Mobile Device(s)
+      description: Phone or tablet(s) with the Home Assistant app to notify.
+      selector:
+        device:
+          integration: mobile_app
+          multiple: true
+
+    filters:
+      name: Filters
+      icon: mdi:filter
+      collapsed: true
+      input:
+        severity:
+          name: Review Severity
+          description: >
+            Which Frigate review severities start a journey. See "Link
+            Detections" below for the reviews that join one.
+          default: [alert]
+          selector:
+            select:
+              multiple: true
+              options:
+                - label: Alert
+                  value: alert
+                - label: Detection
+                  value: detection
+
+        labels:
+          name: Labels
+          description: >
+            Only follow these objects. Leave empty to follow everything. A
+            journey follows one kind of object: the first of these found in
+            the review that started it.
+          default: []
+          selector:
+            select:
+              multiple: true
+              custom_value: true
+              sort: false
+              options:
+                - person
+                - car
+                - dog
+                - cat
+                - bird
+                - package
+                - bicycle
+                - motorcycle
+
+        cooldown:
+          name: Cooldown
+          description: >
+            Minimum time between new notifications from this automation,
+            counted from the last review that started or joined a journey.
+            Reviews that join a journey in progress are always added to it.
+          default:
+            hours: 0
+            minutes: 0
+            seconds: 0
+          selector:
+            duration: {}
+
+    journey_options:
+      name: Journey
+      icon: mdi:transit-connection-variant
+      collapsed: true
+      input:
+        link_gap:
+          name: Link Gap (seconds)
+          description: >
+            How long after the object was last seen a review on another
+            camera still counts as the same journey. Reviews that overlap are
+            always linked. A longer gap follows objects further (e.g. walking
+            around the house out of view), but the notification's GIF comes
+            that much later, because the journey only ends once this much
+            time has passed with nothing new.
+          default: 20
+          selector:
+            number:
+              min: 0
+              max: 300
+              step: 1
+              unit_of_measurement: seconds
+              mode: slider
+
+        link_detections:
+          name: Link Detections
+          description: >
+            ON = a review of any severity can join a journey once it has
+            started (e.g. a "detection" on the driveway camera joining a
+            person "alert" at the front door). OFF = only reviews that pass
+            the Review Severity filter can join.
+          default: true
+          selector:
+            boolean: {}
+
+        max_journey:
+          name: Maximum Journey Length
+          description: >
+            Stop following the journey after this long and send the GIF
+            anyway.
+          default:
+            hours: 0
+            minutes: 10
+            seconds: 0
+          selector:
+            duration: {}
+
+    gif_options:
+      name: GIF
+      icon: mdi:file-gif-box
+      collapsed: true
+      input:
+        frigate_api_url:
+          name: Frigate URL (from Home Assistant)
+          description: >
+            The URL Home Assistant uses to reach Frigate's API, usually the
+            same one the Frigate integration uses. For the Frigate add-on
+            this is http://ccab4aaf-frigate:5000 (ccab4aaf-frigate-fa for the
+            full access add-on, ccab4aaf-frigate-beta for the beta). Use the
+            unauthenticated port 5000, not 8971. Leave blank to skip the
+            custom GIF and use Frigate's GIF of the first camera.
+          default: http://ccab4aaf-frigate:5000
+          selector:
+            text: {}
+
+        gif_shape:
+          name: Frame Shape
+          description: >
+            "Auto" follows the cameras in each journey: portrait if they are
+            all portrait (e.g. doorbell or hallway cameras), landscape if they
+            are all landscape, and square if the journey mixes both. Or pick
+            one shape for every GIF. Cameras that don't match the shape are
+            fitted inside it.
+          default: auto
+          selector:
+            select:
+              options:
+                - label: Auto (match the cameras)
+                  value: auto
+                - label: Landscape (16:9)
+                  value: landscape
+                - label: Portrait (9:16)
+                  value: portrait
+                - label: Square
+                  value: square
+
+        gif_size:
+          name: Size
+          description: >
+            Length of the GIF's longest side. Bigger is sharper, but makes a
+            bigger file and takes longer to build.
+          default: 640
+          selector:
+            number:
+              min: 240
+              max: 1280
+              step: 2
+              unit_of_measurement: px
+              mode: box
+
+        gif_background:
+          name: Background
+          description: >
+            What fills the space around a camera that doesn't match the frame
+            shape: a blurred copy of the camera itself (like phones show
+            vertical video), or plain black bars (smaller file).
+          default: blur
+          selector:
+            select:
+              options:
+                - label: Blurred
+                  value: blur
+                - label: Black
+                  value: black
+
+        gif_fps:
+          name: Frames per Second
+          description: More frames play smoother, but make a bigger file.
+          default: 8
+          selector:
+            number:
+              min: 2
+              max: 15
+              step: 1
+              mode: slider
+
+        gif_speed:
+          name: Playback Speed
+          description: How much faster than real time the GIF plays.
+          default: 2
+          selector:
+            number:
+              min: 1
+              max: 10
+              step: 0.5
+              unit_of_measurement: x
+              mode: slider
+
+        gif_max_length:
+          name: Maximum GIF Length (seconds)
+          description: >
+            Long journeys are sped up further so the GIF fits in this length.
+            iOS only shows images up to 10 MB in notifications.
+          default: 20
+          selector:
+            number:
+              min: 5
+              max: 60
+              step: 1
+              unit_of_measurement: seconds
+              mode: slider
+
+        camera_labels:
+          name: Camera Names in GIF
+          description: >
+            Show the camera name in the corner of the GIF. Skipped
+            automatically if Home Assistant's ffmpeg can't draw text.
+          default: true
+          selector:
+            boolean: {}
+
+        recording_delay:
+          name: Recording Delay (seconds)
+          description: >
+            How long to wait after the journey ends before fetching the
+            recordings. Frigate only saves a recording once its segment
+            (about 10s) is finished; the script retries a short clip a few
+            times anyway.
+          default: 15
+          selector:
+            number:
+              min: 0
+              max: 120
+              step: 1
+              unit_of_measurement: seconds
+              mode: slider
+
+        render_timeout:
+          name: GIF Timeout (seconds)
+          description: >
+            Give up on the custom GIF after this long and use Frigate's GIF
+            of the first camera. Rendering full resolution recordings can
+            take a while on slow hardware such as a Raspberry Pi.
+          default: 180
+          selector:
+            number:
+              min: 30
+              max: 900
+              step: 10
+              unit_of_measurement: seconds
+              mode: box
+
+    notification_options:
+      name: Notification Options
+      icon: mdi:message-image
+      collapsed: true
+      input:
+        notify_immediately:
+          name: Notify Immediately
+          description: >
+            ON = send a notification with a thumbnail as soon as the journey
+            starts, update it as the object reaches more cameras, then with
+            the GIF at the end. OFF = stay quiet until the GIF is ready.
+          default: true
+          selector:
+            boolean: {}
+
+        title_style:
+          name: Notification Title
+          description: >
+            "What was detected" e.g. "Zach detected". "Cameras" e.g.
+            "Front Door Cam → Back Door Cam". "None" sends no title.
+          default: subject
+          selector:
+            select:
+              options:
+                - label: What was detected
+                  value: subject
+                - label: Cameras
+                  value: cameras
+                - label: None
+                  value: none
+
+        message_style:
+          name: Notification Text
+          description: >
+            "Cameras" lists the cameras in the order the object reached them,
+            with the journey length once it ends, e.g. "Front Door Cam → Back
+            Door Cam (0:05)". "What was detected" e.g. "Zach was detected".
+            "None" sends no text.
+          default: cameras
+          selector:
+            select:
+              options:
+                - label: Cameras
+                  value: cameras
+                - label: What was detected
+                  value: subject
+                - label: None
+                  value: none
+
+        buttons:
+          name: Action Buttons
+          description: >
+            Buttons to show on the notification (Android shows at most 3).
+            "View Clip" and "Open in Frigate" open the first camera's review.
+          default: [gif, clip, frigate]
+          selector:
+            select:
+              multiple: true
+              sort: false
+              options:
+                - label: View GIF
+                  value: gif
+                - label: View Clip
+                  value: clip
+                - label: Open in Frigate (needs the External Frigate URL)
+                  value: frigate
+
+        sublabel:
+          name: Show Recognized Names
+          description: >
+            Use the names of people Frigate recognized (face recognition)
+            instead of the object label, e.g. "Zach detected" instead of
+            "Person detected".
+          default: true
+          selector:
+            boolean: {}
+
+        append:
+          name: Append "Camera"
+          description: Add "Camera" to the end of camera names.
+          default: false
+          selector:
+            boolean: {}
+
+        expand:
+          name: Expand "Cam" to "Camera"
+          default: false
+          selector:
+            boolean: {}
+
+        tap_action:
+          name: Tap Action
+          description: What opens when the notification itself is tapped.
+          default: gif
+          selector:
+            select:
+              options:
+                - label: The journey GIF
+                  value: gif
+                - label: Review in Frigate (falls back to the clip if no Frigate URL is set)
+                  value: frigate
+                - label: Event clip
+                  value: clip
+
+        notification_timeout:
+          name: Notification Timeout (minutes)
+          description: Dismiss the notification automatically after this long.
+          default: 60
+          selector:
+            number:
+              min: 1
+              max: 1440
+              step: 1
+              unit_of_measurement: minutes
+              mode: box
+
+    advanced_options:
+      name: Advanced Options
+      icon: mdi:cog
+      collapsed: true
+      input:
+        base_url:
+          name: External Home Assistant URL
+          description: >
+            Public URL of Home Assistant including the port if needed (e.g.
+            https://ha.example.com). Used by the "View GIF" and "View Clip"
+            buttons. Leave blank to open them inside the companion app.
+          default: ""
+          selector:
+            text: {}
+
+        frigate_url:
+          name: External Frigate URL
+          description: >
+            Public URL of the Frigate UI (e.g. https://frigate.example.com).
+            Used for the "Open in Frigate" button. Leave blank to hide that
+            button.
+          default: ""
+          selector:
+            text: {}
+
+        mqtt_topic:
+          name: Frigate Reviews MQTT Topic
+          description: Change only if you set a custom MQTT topic_prefix in Frigate.
+          default: frigate/reviews
+          selector:
+            text: {}
+
+        shell_service:
+          name: Shell Command Action
+          description: >
+            The shell_command action that runs frigate_vision_multicam.py.
+          default: shell_command.frigate_vision_multicam
+          selector:
+            text: {}
+
+        pre_padding:
+          name: Lead-in (seconds)
+          description: >
+            Seconds of recording to show before the object first appears
+            (and before it reappears after being out of view).
+          default: 1
+          selector:
+            number:
+              min: 0
+              max: 10
+              step: 0.5
+              unit_of_measurement: seconds
+              mode: slider
+
+        post_padding:
+          name: Lead-out (seconds)
+          description: Seconds of recording to show after each camera loses the object.
+          default: 2
+          selector:
+            number:
+              min: 0
+              max: 10
+              step: 0.5
+              unit_of_measurement: seconds
+              mode: slider
+
+# ---------------------------------------------------------------------------
+# Every review that matches the filters starts a run. If another run of this
+# automation is already following a journey, the new run asks it (with a
+# frigate_vision_multicam_join event) whether the review belongs to that
+# journey. If it does, that run takes the review over and this one stops;
+# otherwise this run starts a journey of its own.
+#
+# The run that owns a journey listens to every review on the topic, adds the
+# ones that link to it, and once they have all ended and the link gap has
+# passed, has frigate_vision_multicam.py cut their recordings together into
+# one GIF.
+# ---------------------------------------------------------------------------
+mode: parallel
+max: 100
+max_exceeded: silent
+
+triggers:
+  - trigger: mqtt
+    topic: !input mqtt_topic
+
+variables:
+  input_cameras: !input cameras
+  input_severity: !input severity
+  input_labels: !input labels
+  input_cooldown: !input cooldown
+
+  watched_cameras: >
+    {{ input_cameras | map('replace', 'camera.', '') | list }}
+  labels: "{{ input_labels | map('lower') | list }}"
+
+  should_start: >
+    {% macro matches(r) -%}
+      {%- set d = r.data | default({}) -%}
+      {%- set found = (d.objects | default([]) + d.audio | default([]))
+            | map('replace', '-verified', '') | map('lower') | list -%}
+      {%- set cam_ok = (r.camera | default('') | lower | replace('-', '_')) in watched_cameras -%}
+      {%- set sev_ok = r.severity | default('') in input_severity -%}
+      {%- set label_ok = found | count > 0 and (not labels or found | select('in', labels) | list | count > 0) -%}
+      {{- cam_ok and sev_ok and label_ok -}}
+    {%- endmacro %}
+    {% set p = trigger.payload_json | default({}) %}
+    {% if p.type | default('') == 'new' %}
+      {{ matches(p.after) == 'True' }}
+    {% elif p.type | default('') == 'update' %}
+      {{ matches(p.after) == 'True' and matches(p.before) != 'True' }}
+    {% else %}
+      {{ false }}
+    {% endif %}
+
+  cooldown_seconds: >
+    {{ (input_cooldown.days | default(0)) * 86400
+       + (input_cooldown.hours | default(0)) * 3600
+       + (input_cooldown.minutes | default(0)) * 60
+       + (input_cooldown.seconds | default(0)) }}
+
+conditions:
+  - condition: template
+    value_template: "{{ should_start }}"
+  - alias: Cooldown since the last notification
+    condition: template
+    value_template: >
+      {{ cooldown_seconds == 0
+         or this.attributes.last_triggered is none
+         or now().timestamp() - as_timestamp(this.attributes.last_triggered, 0) >= cooldown_seconds }}
+
+actions:
+
+  # ── Resolve inputs ─────────────────────────────────────────────────────────
+  - variables:
+      input_devices: !input notify_device
+      input_link_gap: !input link_gap
+      input_link_detections: !input link_detections
+      input_max_journey: !input max_journey
+      input_frigate_api_url: !input frigate_api_url
+      input_gif_shape: !input gif_shape
+      input_gif_size: !input gif_size
+      input_gif_background: !input gif_background
+      input_gif_fps: !input gif_fps
+      input_gif_speed: !input gif_speed
+      input_gif_max_length: !input gif_max_length
+      input_camera_labels: !input camera_labels
+      input_recording_delay: !input recording_delay
+      input_render_timeout: !input render_timeout
+      input_notify_immediately: !input notify_immediately
+      input_title_style: !input title_style
+      input_message_style: !input message_style
+      input_buttons: !input buttons
+      input_sublabel: !input sublabel
+      input_append: !input append
+      input_expand: !input expand
+      input_tap_action: !input tap_action
+      input_notification_timeout: !input notification_timeout
+      input_base_url: !input base_url
+      input_frigate_url: !input frigate_url
+      input_shell_service: !input shell_service
+      input_pre_padding: !input pre_padding
+      input_post_padding: !input post_padding
+
+      automation_id: "{{ this.entity_id }}"
+      review: "{{ trigger.payload_json.after }}"
+      max_journey_seconds: >
+        {{ (input_max_journey.hours | default(0)) * 3600
+           + (input_max_journey.minutes | default(0)) * 60
+           + (input_max_journey.seconds | default(0)) }}
+
+  # ── Join a journey in progress ─────────────────────────────────────────────
+  # Only needed if another run is going. Keep following this review's own
+  # updates while asking, so none are missed if it ends up starting a journey.
+  - if:
+      - condition: template
+        value_template: "{{ this.attributes.current | default(0) | int(0) > 0 }}"
+    then:
+      - variables:
+          join_deadline: "{{ now().timestamp() + 2 }}"
+          joined: false
+      - repeat:
+          until:
+            - condition: template
+              value_template: "{{ joined or now().timestamp() >= join_deadline }}"
+          sequence:
+            - event: frigate_vision_multicam_join
+              event_data:
+                automation: "{{ automation_id }}"
+                review: "{{ review }}"
+            - wait_for_trigger:
+                - trigger: event
+                  event_type: frigate_vision_multicam_joined
+                  event_data:
+                    automation: "{{ automation_id }}"
+                    review_id: "{{ review.id }}"
+                - trigger: mqtt
+                  topic: !input mqtt_topic
+                  value_template: "{{ value_json.after.id }}"
+                  payload: "{{ review.id }}"
+              timeout:
+                seconds: 1
+              continue_on_timeout: true
+            - variables:
+                joined: "{{ wait.trigger is not none and wait.trigger.event is defined }}"
+                review: >
+                  {% set t = wait.trigger %}
+                  {{ t.payload_json.after
+                     if t is not none and t.event is not defined
+                        and t.payload_json.type | default('') in ['new', 'update', 'end']
+                     else review }}
+      - if:
+          - condition: template
+            value_template: "{{ joined }}"
+        then:
+          - stop: Joined a journey already in progress
+
+  # ── New journey ────────────────────────────────────────────────────────────
+  - variables:
+      journey_id: "{{ review.id }}"
+      # The kind of object this journey follows
+      label: >
+        {% set d = review.data | default({}) %}
+        {% set found = (d.objects | default([]) + d.audio | default([]))
+             | map('replace', '-verified', '') | map('lower') | list %}
+        {{ (found | select('in', labels) | first) if labels else found | first }}
+      members: "{{ [review] }}"
+      started_at: "{{ now().timestamp() }}"
+      last_end_at: "{{ now().timestamp() }}"
+
+      notify_services: >
+        {% set ns = namespace(services=[]) %}
+        {% for device in input_devices %}
+          {% set ns.services = ns.services
+               + ['notify.mobile_app_' ~ (device_attr(device, 'name') | slugify)] %}
+        {% endfor %}
+        {{ ns.services }}
+
+      first_camera: "{{ review.camera }}"
+      first_event_id: "{{ (review.data.detections | default([]) | first) or '' }}"
+      base_url: "{{ input_base_url | trim | regex_replace('/+$', '') }}"
+      frigate_gif_url: /api/frigate/notifications/{{ journey_id }}/review_preview.gif
+      frigate_api: "{{ input_frigate_api_url | trim | regex_replace('/+$', '') }}"
+      thumbnail_url: >
+        {% if first_event_id %}/api/frigate/notifications/{{ first_event_id }}/thumbnail.jpg
+        {% else %}/api/frigate/notifications/{{ journey_id }}/{{ first_camera }}/review_thumbnail.webp{% endif %}
+      clip_url: >
+        {% if first_event_id %}{{ base_url }}/api/frigate/notifications/{{ first_event_id }}/{{ first_camera }}/clip.mp4{% endif %}
+      frigate_review_url: >
+        {% set f = input_frigate_url | trim | regex_replace('/+$', '') %}
+        {% if f %}{{ f }}/review?id={{ journey_id }}{% endif %}
+      zero_width_space: "\u200B"
+
+      # State for the loop below
+      #   stage: active -> ended -> [render ->] finish -> done
+      stage: active
+      send: "{{ input_notify_immediately }}"
+      gif_url: ""
+      alerted: false
+      shown_cameras: []
+      shown_names: []
+
+  # ── Journey loop ───────────────────────────────────────────────────────────
+  # Each pass (1) sends/updates the notification if `send` is set, then
+  # (2) does whatever the current stage is waiting on. The notification always
+  # uses the same tag, so every send replaces the previous one.
+  - repeat:
+      until:
+        - condition: template
+          value_template: "{{ stage == 'done' }}"
+      sequence:
+
+        - variables:
+            # Cameras in the order the object reached them, and the names of
+            # the people recognized along the way
+            path: >
+              {% set ns = namespace(cams=[]) %}
+              {% for m in members | sort(attribute='start_time') %}
+                {% if m.camera not in ns.cams %}{% set ns.cams = ns.cams + [m.camera] %}{% endif %}
+              {% endfor %}
+              {{ ns.cams }}
+            person_names: >
+              {% set ns = namespace(names=[]) %}
+              {% if label == 'person' %}
+                {% for m in members %}
+                  {% set others = m.data.objects | default([]) | map('replace', '-verified', '')
+                       | reject('in', ['person', 'face']) | list %}
+                  {% if not others %}
+                    {% set ns.names = ns.names + (m.data.sub_labels | default([]) | map('string') | list) %}
+                  {% endif %}
+                {% endfor %}
+              {% endif %}
+              {{ ns.names | reject('eq', '') | unique | list }}
+
+        - if:
+            - condition: template
+              value_template: "{{ send and notify_services | count > 0 }}"
+          then:
+            - variables:
+                n_cameras: >
+                  {% set ns = namespace(names=[]) %}
+                  {% for cam in path %}
+                    {% set name = cam | replace('_', ' ') | replace('-', ' ') | title %}
+                    {% if input_expand %}
+                      {% set name = name | regex_replace('(?i)\\bcam\\b', 'Camera') %}
+                    {% endif %}
+                    {% set ns.names = ns.names + [name ~ (' Camera' if input_append else '')] %}
+                  {% endfor %}
+                  {{ ns.names | join(' → ') }}
+                n_group: >
+                  {% set name = first_camera | replace('_', ' ') | replace('-', ' ') | title %}
+                  {% if input_expand %}
+                    {% set name = name | regex_replace('(?i)\\bcam\\b', 'Camera') %}
+                  {% endif %}
+                  {{ name ~ (' Camera' if input_append else '') }}
+                n_subject: >
+                  {% set names = person_names if input_sublabel else [] %}
+                  {% set items = names if names else [label | replace('_', ' ')] %}
+                  {% if items | count > 1 %}
+                    {% set text = items[:-1] | join(', ') ~ ' and ' ~ items[-1] %}
+                  {% else %}
+                    {% set text = items[0] | default('activity', true) %}
+                  {% endif %}
+                  {{ text[:1] | upper ~ text[1:] }}
+                n_duration: >
+                  {% if gif_url %}
+                    {% set start = members | map(attribute='start_time') | min %}
+                    {% set end = members | map(attribute='end_time') | reject('none') | list | max | default(start) %}
+                    {% set s = (end - start) | round(0) | int %}
+                    {{ '%d:%02d' | format(s // 60, s % 60) }}
+                  {% endif %}
+                n_title: >
+                  {% if input_title_style == 'cameras' %}{{ n_cameras }}
+                  {% else %}{{ n_subject }} detected{% endif %}
+                n_message: >
+                  {% if input_message_style == 'subject' %}{{ n_subject }} was detected
+                  {% else %}{{ n_cameras }}{{ ' (' ~ n_duration ~ ')' if n_duration else '' }}{% endif %}
+                n_gif_open_url: "{{ base_url ~ gif_url if gif_url else '' }}"
+                n_tap_url: >
+                  {% if input_tap_action == 'gif' and n_gif_open_url %}{{ n_gif_open_url }}
+                  {% elif input_tap_action in ['gif', 'frigate'] and frigate_review_url %}{{ frigate_review_url }}
+                  {% else %}{{ clip_url or frigate_review_url }}{% endif %}
+                n_buttons: >
+                  {% set b = [] %}
+                  {% if n_gif_open_url and 'gif' in input_buttons %}
+                    {% set b = b + [{'action': 'URI', 'title': 'View GIF', 'uri': n_gif_open_url}] %}
+                  {% endif %}
+                  {% if clip_url and 'clip' in input_buttons %}
+                    {% set b = b + [{'action': 'URI', 'title': 'View Clip', 'uri': clip_url}] %}
+                  {% endif %}
+                  {% if frigate_review_url and 'frigate' in input_buttons %}
+                    {% set b = b + [{'action': 'URI', 'title': 'Open in Frigate', 'uri': frigate_review_url}] %}
+                  {% endif %}
+                  {{ b[:3] }}
+                n_service_data: >
+                  {% set image = gif_url or thumbnail_url %}
+                  {% set data = {
+                       'tag': journey_id,
+                       'group': n_group,
+                       'channel': n_group ~ ' Notifications',
+                       'timeout': (input_notification_timeout * 60) | int,
+                       'ttl': 0,
+                       'priority': 'high',
+                       'alert_once': true,
+                       'clickAction': n_tap_url,
+                       'url': n_tap_url,
+                       'image': image,
+                       'attachment': {'url': image},
+                       'push': {'interruption-level': 'passive' if alerted else 'active'},
+                       'actions': n_buttons } %}
+                  {% set d = {'message': zero_width_space if input_message_style == 'none' else n_message,
+                              'data': data} %}
+                  {{ d if input_title_style == 'none' else dict(d, title=n_title) }}
+            - repeat:
+                for_each: "{{ notify_services }}"
+                sequence:
+                  - action: "{{ repeat.item }}"
+                    continue_on_error: true
+                    data: "{{ n_service_data }}"
+            - variables:
+                alerted: true
+                shown_cameras: "{{ path }}"
+                shown_names: "{{ person_names }}"
+
+        - choose:
+
+            # Journey in progress: add reviews that link to it and follow them
+            # until they have all ended and the link gap has passed
+            - conditions: "{{ stage == 'active' }}"
+              sequence:
+                - variables:
+                    any_active: "{{ members | selectattr('end_time', 'none') | list | count > 0 }}"
+                    wait_seconds: >
+                      {% set max_left = started_at + max_journey_seconds - now().timestamp() %}
+                      {% set gap_left = last_end_at + input_link_gap - now().timestamp() %}
+                      {{ [max_left if any_active else [gap_left, max_left] | min, 0] | max | round(1) }}
+                - if:
+                    - condition: template
+                      value_template: "{{ wait_seconds <= 0 }}"
+                  then:
+                    - variables:
+                        stage: ended
+                  else:
+                    - wait_for_trigger:
+                        - trigger: mqtt
+                          topic: !input mqtt_topic
+                        - trigger: event
+                          event_type: frigate_vision_multicam_join
+                          event_data:
+                            automation: "{{ automation_id }}"
+                      timeout:
+                        seconds: "{{ wait_seconds }}"
+                      continue_on_timeout: true
+                    - variables:
+                        is_join: "{{ wait.trigger is not none and wait.trigger.event is defined }}"
+                        msg_type: >
+                          {% if wait.trigger is none %}none
+                          {% elif is_join %}join
+                          {% else %}{{ wait.trigger.payload_json.type | default('none') }}{% endif %}
+                        r: >
+                          {% if is_join %}{{ wait.trigger.event.data.review | default({}) }}
+                          {% elif msg_type in ['new', 'update', 'end'] %}{{ wait.trigger.payload_json.after | default({}) }}
+                          {% else %}{}{% endif %}
+                        known: "{{ r.id is defined and r.id in members | map(attribute='id') | list }}"
+                        linkable: >
+                          {% if r.id is not defined or known or msg_type not in ['new', 'update', 'join'] %}
+                            {{ false }}
+                          {% else %}
+                            {% set d = r.data | default({}) %}
+                            {% set found = (d.objects | default([]) + d.audio | default([]))
+                                 | map('replace', '-verified', '') | map('lower') | list %}
+                            {% set cam_ok = (r.camera | default('') | lower | replace('-', '_')) in watched_cameras %}
+                            {% set sev_ok = input_link_detections or r.severity | default('') in input_severity %}
+                            {% set first_start = members | map(attribute='start_time') | min %}
+                            {% set last_end = members | map(attribute='end_time') | reject('none') | list | max | default(first_start) %}
+                            {% set start = r.start_time | float(0) %}
+                            {% set time_ok = start >= first_start - input_link_gap
+                                 and start <= first_start + max_journey_seconds
+                                 and (any_active or start <= last_end + input_link_gap) %}
+                            {% set names = members | map(attribute='data.sub_labels') | map('default', [])
+                                 | sum(start=[]) | map('string') | reject('eq', '') | list %}
+                            {% set r_names = d.sub_labels | default([]) | map('string') | reject('eq', '') | list %}
+                            {% set names_ok = not names or not r_names or r_names | select('in', names) | list | count > 0 %}
+                            {{ cam_ok and sev_ok and label in found and time_ok and names_ok }}
+                          {% endif %}
+                        members: >
+                          {% if known and msg_type in ['new', 'update', 'end'] %}
+                            {{ members | rejectattr('id', 'eq', r.id) | list + [r] }}
+                          {% elif linkable %}
+                            {{ members + [r] }}
+                          {% else %}
+                            {{ members }}
+                          {% endif %}
+                        last_end_at: >
+                          {{ now().timestamp() if (known or linkable) and msg_type == 'end' else last_end_at }}
+                        stage: >
+                          {{ 'ended' if wait.trigger is none
+                             and now().timestamp() >= started_at + max_journey_seconds else 'active' }}
+                    - if:
+                        - condition: template
+                          value_template: "{{ is_join and (known or linkable) }}"
+                      then:
+                        - event: frigate_vision_multicam_joined
+                          event_data:
+                            automation: "{{ automation_id }}"
+                            review_id: "{{ r.id }}"
+                    - variables:
+                        send: >
+                          {{ input_notify_immediately and (known or linkable) }}
+                        new_path: >
+                          {% set ns = namespace(cams=[]) %}
+                          {% for m in members | sort(attribute='start_time') %}
+                            {% if m.camera not in ns.cams %}{% set ns.cams = ns.cams + [m.camera] %}{% endif %}
+                          {% endfor %}
+                          {{ ns.cams }}
+                        new_names: >
+                          {% set ns = namespace(names=[]) %}
+                          {% if label == 'person' %}
+                            {% for m in members %}
+                              {% set others = m.data.objects | default([]) | map('replace', '-verified', '')
+                                   | reject('in', ['person', 'face']) | list %}
+                              {% if not others %}
+                                {% set ns.names = ns.names + (m.data.sub_labels | default([]) | map('string') | list) %}
+                              {% endif %}
+                            {% endfor %}
+                          {% endif %}
+                          {{ ns.names | reject('eq', '') | unique | list }}
+                    - variables:
+                        # Only re-send when the notification would change
+                        send: >
+                          {{ send and (new_path != shown_cameras
+                             or (input_sublabel and (new_names | sort) != (shown_names | sort))) }}
+
+            # Journey over: first show Frigate's own GIF of the first camera
+            # (once Frigate has finished it), so there is always a GIF even if
+            # the custom one can't be built
+            - conditions: "{{ stage == 'ended' }}"
+              sequence:
+                - delay:
+                    seconds: "{{ [last_end_at + 10 - now().timestamp(), 0] | max | round(1) }}"
+                - variables:
+                    ended_at: "{{ now().timestamp() }}"
+                    gif_url: "{{ frigate_gif_url }}"
+                    send: true
+                    stage: "{{ 'render' if frigate_api else 'finish' }}"
+
+            # Then wait for Frigate to save the recordings, have the script
+            # build the journey GIF in the background, check on it, and swap
+            # it in once it's ready
+            - conditions: "{{ stage == 'render' }}"
+              sequence:
+                - variables:
+                    job: >
+                      {{ journey_id }}-{{ '%04x%04x' | format(range(65536) | random, range(65536) | random) }}
+                    render_status: running
+                    render_url: ""
+                    render_error: ""
+                - delay:
+                    seconds: "{{ [ended_at + input_recording_delay - now().timestamp(), 0] | max | round(1) }}"
+                - sequence:
+                    - variables:
+                        render_args: >
+                          render job={{ job }} url={{ frigate_api }}
+                          size={{ input_gif_size | int }} shape={{ input_gif_shape }}
+                          background={{ input_gif_background }}
+                          fps={{ input_gif_fps | int }} speed={{ input_gif_speed }}
+                          max_length={{ input_gif_max_length }}
+                          pre={{ input_pre_padding }} post={{ input_post_padding }}
+                          labels={{ 1 if input_camera_labels else 0 }}
+                          keep_hours={{ [48, (input_notification_timeout / 60) | round(0, 'ceil') | int + 1] | max }}
+                          {% for m in members | sort(attribute='start_time') -%}
+                            review={{ m.camera }}@{{ m.start_time }}@{{ m.end_time if m.end_time is not none else now().timestamp() }}{{ ' ' }}
+                          {%- endfor %}
+                        render_deadline: "{{ now().timestamp() + input_render_timeout }}"
+                        render_status: running
+                        render_response: {}
+                    - action: "{{ input_shell_service }}"
+                      continue_on_error: true
+                      data:
+                        args: "{{ render_args | trim }}"
+                      response_variable: render_response
+                    - variables:
+                        render_status: >
+                          {{ (render_response.stdout | default('')
+                              | regex_findall('"status": "(\\w+)"') | first | default('failed'))
+                             | replace('started', 'running') }}
+                        render_error: >
+                          {{ render_response.stdout | default('')
+                             | regex_findall('"error": "([^"]*)"') | first
+                             | default(render_response.stderr | default('the shell_command did not run', true)) }}
+                    - repeat:
+                        until:
+                          - condition: template
+                            value_template: >
+                              {{ render_status != 'running' or now().timestamp() >= render_deadline }}
+                        sequence:
+                          - delay:
+                              seconds: 3
+                          - variables:
+                              status_response: {}
+                          - action: "{{ input_shell_service }}"
+                            continue_on_error: true
+                            data:
+                              args: status job={{ job }}
+                            response_variable: status_response
+                          - variables:
+                              render_status: >
+                                {{ status_response.stdout | default('')
+                                   | regex_findall('"status": "(\\w+)"') | first | default('running') }}
+                              render_url: >
+                                {{ status_response.stdout | default('')
+                                   | regex_findall('"url": "([^"]+)"') | first | default('') }}
+                              render_error: >
+                                {{ status_response.stdout | default('')
+                                   | regex_findall('"error": "([^"]*)"') | first | default('') }}
+                    - if:
+                        - condition: template
+                          value_template: "{{ render_status != 'done' or not render_url }}"
+                      then:
+                        - action: system_log.write
+                          data:
+                            level: warning
+                            logger: blueprints.frigate_vision_multicam
+                            message: >
+                              Frigate Vision could not build the GIF for journey {{ journey_id }}
+                              ({{ 'timed out' if render_status == 'running' else render_error }}),
+                              keeping Frigate's GIF of the first camera. The script's log
+                              is /config/frigate_vision/jobs/{{ job }}.log
+                - variables:
+                    gif_url: >
+                      {{ render_url if render_status == 'done' and render_url else gif_url }}
+                    send: "{{ render_status == 'done' and render_url | length > 0 }}"
+                    stage: finish
+
+            # GIF sent: nothing left to do
+            - conditions: "{{ stage == 'finish' }}"
+              sequence:
+                - variables:
+                    stage: done
+                    send: false
+
+          default:
+            - variables:
+                stage: done
+                send: false
+

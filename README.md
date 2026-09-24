@@ -58,6 +58,49 @@ Every update replaces the same notification, and only the first one makes a soun
 
 ---
 
+### 🗺️ Multi-Camera Journeys (experimental)
+
+A second blueprint, **FrigateVision - Multi-Camera Journeys** (`frigate_vision_multicam.yaml`), follows an object as it moves between cameras and sends **one notification for the whole journey**. Its GIF is built from the full recordings and cuts from one camera to the next as the object moves, e.g. *"Zach detected: Street Cam → Front Door Cam (0:24)"*.
+
+[![Open your Home Assistant instance and show the blueprint import dialog with a specific blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fzacharyd3%2FFrigate-Vision%2Fblob%2Fmain%2Ffrigate_vision_multicam.yaml)
+
+**How it links cameras.** Reviews are part of the same journey when they are for the same kind of object (person, car, dog...) and each one starts while the previous one is still going, or within the *Link Gap* (20s by default) after it ends. If both reviews have recognized names (faces, plates), the names must match. A dog in the back yard doesn't join a person walking to the front door. A journey that stays on one camera simply gets a one-camera GIF, so use this blueprint *instead of* the regular one for the cameras you add to it.
+
+**How the GIF is cut.** The GIF always shows the camera that most recently picked the object up. When the next camera sees it, the GIF hard-cuts to that camera. If that camera loses it while an earlier one still sees it, the GIF cuts back. Stretches where no camera saw anything are skipped. Each camera's name is shown in the corner.
+
+**Portrait and landscape cameras.** With *Frame Shape* on *Auto*, the GIF follows the cameras in each journey:
+* all portrait (e.g. doorbell or hallway cameras): portrait GIF
+* all landscape: landscape GIF, at the camera's own aspect ratio
+* mixed: square GIF
+
+A camera that doesn't match the frame sits on a blurred copy of itself (like phones show vertical video), or on black bars if you prefer.
+
+**What you get, in order:** a thumbnail as soon as the journey starts, updated silently as the object reaches more cameras. When the journey ends, the notification updates with Frigate's own GIF of the first camera. Once the journey GIF is built, it replaces that GIF in place. If the journey GIF can't be built, the Frigate GIF stays and a warning explains why in the Home Assistant log.
+
+#### Setup (one time)
+
+Frigate only makes GIFs of one review on one camera, so the journey GIF is built by a small Python script run by Home Assistant. It uses the `python3` and `ffmpeg` that already come with Home Assistant, so nothing else needs installing.
+
+1. Copy [`frigate_vision_multicam.py`](frigate_vision_multicam.py) to `/config/frigate_vision/frigate_vision_multicam.py` (e.g. with the File editor or Samba add-on).
+2. Add this to `configuration.yaml`:
+   ```yaml
+   shell_command:
+     frigate_vision_multicam: "python3 /config/frigate_vision/frigate_vision_multicam.py {{ args }}"
+   ```
+3. Make sure the folder `/config/www` exists, then **restart** Home Assistant. Home Assistant only serves `/local/` if that folder existed at startup.
+4. Import the blueprint and create an automation. Set *GIF → Frigate URL (from Home Assistant)* to the address Home Assistant uses to reach Frigate's API. For the Frigate add-on this is `http://ccab4aaf-frigate:5000` (the default). Use the unauthenticated port 5000.
+
+#### Good to know
+
+* **Recordings must be enabled** in Frigate for these cameras. The GIF is built from them, not from previews.
+* **Timing:** a journey ends once everything has ended and the *Link Gap* has passed. Frigate's GIF follows about 10s later, and the journey GIF after the *Recording Delay* plus the time to build it. On a Raspberry Pi with 4K cameras, building can take a minute or more. Lower *Size*/*Frames per Second*, or raise *GIF Timeout*, if it times out.
+* **GIF size:** iOS only shows images up to 10 MB in notifications. The defaults (640px, 8 fps, 2x speed, 20s max) stay well under that. *Blurred* backgrounds make bigger files than *Black*.
+* **Where the GIFs live:** in `/config/www/frigate_vision/`. They are deleted after 48 hours, or after the notification timeout if that's longer. Like everything under `/local/`, they can be opened without logging in by anyone who can reach your Home Assistant and knows the file name. The names include a random part, so they can't be guessed.
+* **Troubleshooting:** each GIF has a log in `/config/frigate_vision/jobs/`, named in the Home Assistant log warning.
+* **Not in this version (yet):** zone filters, the GenAI summary, and pulling in a camera's review from *before* the journey started (e.g. a car on the street "detection" before the person at the door "alert"). Add *Detection* to *Review Severity* if you want those to start a journey.
+
+---
+
 ### 🧠 TL;DR:
 
 **Frigate Vision** sends one notification per Frigate review. It updates in place with names as they're recognized, then an animated GIF of the whole event, then Frigate's AI summary, so you can see what happened without opening anything.
