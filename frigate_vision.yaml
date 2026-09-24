@@ -128,37 +128,54 @@ blueprint:
           name: Use Frigate GenAI Summary
           description: >
             Wait for Frigate's GenAI review summary (Frigate 0.17+ with
-            review -> genai enabled). With "Advanced" notification text its
-            title and short summary become the notification text (flagged with
-            a warning icon if Frigate rates it as a potential threat); in any
-            mode it enables the "Summary" button. Has no effect if GenAI
+            review -> genai enabled). With "Advanced" chosen for the
+            notification title or text, its title and short summary are used
+            (the title flagged with a warning icon if Frigate rates it as a
+            potential threat); in any mode it enables the "Summary" button. Has no effect if GenAI
             review summaries are not configured in Frigate.
           default: true
           selector:
             boolean: {}
 
-        message_style:
-          name: Notification Text
+        title_style:
+          name: Notification Title
           description: >
-            "Basic" uses the camera name as the title and says what was
-            detected, e.g. "Zach was detected" (or "Person was detected" if
-            no name is recognized). "Advanced" uses Frigate's GenAI title and
-            short summary once they arrive, showing what was detected and the
-            camera until then. Android gives an expanded notification a fixed
-            height, so every line of text takes room away from the image.
-            "Image only" sends no title or text at all, for the biggest
-            possible image; tap the notification to see the details in
-            Frigate. The camera still shows as the notification group.
+            "Basic" uses the camera name, e.g. "Back Door Camera".
+            "Advanced" uses Frigate's GenAI title once it arrives, and what
+            was detected (e.g. "Zach detected") until then. "None" sends no
+            title. Android gives an expanded notification a fixed height, so
+            every line of text takes room away from the image; pick "None" for
+            both the title and the text for the biggest possible image. The
+            camera still shows as the notification group.
           default: summary
           selector:
             select:
               options:
-                - label: Basic (camera name and what was detected)
+                - label: Basic (camera name)
                   value: basic
-                - label: Advanced (GenAI title and short summary)
+                - label: Advanced (GenAI title)
                   value: summary
-                - label: Image only (no title or text)
-                  value: image
+                - label: None
+                  value: none
+
+        message_style:
+          name: Notification Text
+          description: >
+            "Basic" says what was detected, e.g. "Zach was detected" (or
+            "Person was detected" if no name is recognized). "Advanced" uses
+            Frigate's GenAI short summary once it arrives, and the camera
+            name (with the review length once it ends) until then. "None"
+            sends no text.
+          default: summary
+          selector:
+            select:
+              options:
+                - label: Basic (what was detected)
+                  value: basic
+                - label: Advanced (GenAI short summary)
+                  value: summary
+                - label: None
+                  value: none
 
         buttons:
           name: Action Buttons
@@ -377,6 +394,7 @@ actions:
   - variables:
       input_notify_immediately: !input notify_immediately
       input_genai_summary: !input genai_summary
+      input_title_style: !input title_style
       input_message_style: !input message_style
       input_buttons: !input buttons
       input_summary_button: "{{ 'summary' in input_buttons }}"
@@ -510,9 +528,11 @@ actions:
                   {% endif %}
                 n_threat: "{{ summary.potential_threat_level | default(0, true) | int(0) }}"
                 # Basic: the camera name. Advanced: Frigate's GenAI title, or
-                # what was detected until it arrives.
+                # what was detected until it arrives. The expanded summary
+                # always gets a title (the advanced one if "None" is chosen).
+                n_no_title: "{{ input_title_style not in ['basic', 'summary'] and not show_summary }}"
                 n_title: >
-                  {% if input_message_style == 'basic' %}{{ camera_name }}
+                  {% if input_title_style == 'basic' %}{{ camera_name }}
                   {% else %}
                     {% set t = summary.title | default('', true) or n_subject ~ ' detected' %}
                     {{ ('🚨 ' if n_threat >= 2 else '⚠️ ' if n_threat == 1 else '') ~ t }}
@@ -520,7 +540,7 @@ actions:
                 # Basic: what was detected. Advanced: Frigate's short summary,
                 # or the camera and duration until it arrives. After the
                 # Summary button: the full scene description and observations.
-                # Not used in "Image only" mode.
+                # Not used when the text is set to "None".
                 n_message: >
                   {% if show_summary %}
                     {% set ns = namespace(parts=[]) %}
@@ -572,13 +592,13 @@ actions:
                          attachment={'url': gif_url if show_gif else thumbnail_url}) %}
                   {% endif %}
                   {{ d }}
-                # "Image only": no title, and a zero-width space as the message
-                # (a message is required, and some phones drop a blank one)
-                n_image_only: "{{ input_message_style == 'image' and not show_summary }}"
+                # No text: a zero-width space as the message (a message is
+                # required, and some phones drop a blank one)
+                n_no_message: "{{ input_message_style not in ['basic', 'summary'] and not show_summary }}"
                 n_service_data: >
-                  {% set d = {'message': zero_width_space if n_image_only else n_message,
+                  {% set d = {'message': zero_width_space if n_no_message else n_message,
                               'data': n_data} %}
-                  {{ d if n_image_only else dict(d, title=n_title) }}
+                  {{ d if n_no_title else dict(d, title=n_title) }}
             - repeat:
                 for_each: "{{ notify_services }}"
                 sequence:
