@@ -292,19 +292,6 @@ blueprint:
               unit_of_measurement: seconds
               mode: slider
 
-        square_gif_command:
-          name: Square GIF Command
-          description: >
-            Optional. Phones crop the notification image to a fixed shape, which
-            cuts the top and bottom off portrait (9:16) cameras. Enter a shell
-            command action (e.g. shell_command.frigate_vision_square_gif) that
-            pads the GIF into a square so the whole frame shows. See the README
-            for the command to add to configuration.yaml. Leave blank to send
-            Frigate's GIF as is.
-          default: ""
-          selector:
-            text: {}
-
         genai_timeout:
           name: GenAI Summary Timeout (seconds)
           description: How long to wait for Frigate's GenAI summary after the review ends.
@@ -402,7 +389,6 @@ actions:
       input_frigate_url: !input frigate_url
       input_max_review_wait: !input max_review_wait
       input_gif_delay: !input gif_delay
-      input_square_gif_command: !input square_gif_command
       input_genai_timeout: !input genai_timeout
       input_mqtt_topic: !input mqtt_topic
 
@@ -689,25 +675,6 @@ actions:
                   else:
                     - delay:
                         seconds: "{{ input_gif_delay }}"
-                # Optional: have the user's shell_command pad the GIF into a
-                # square under /config/www. Falls back to Frigate's GIF if the
-                # command is missing or fails.
-                - if:
-                    - condition: template
-                      value_template: "{{ input_square_gif_command | trim | length > 0 }}"
-                  then:
-                    - action: "{{ input_square_gif_command | trim }}"
-                      continue_on_error: true
-                      data:
-                        review_id: "{{ review_id | regex_replace('[^A-Za-z0-9._-]', '') }}"
-                      response_variable: square_gif
-                    - if:
-                        - condition: template
-                          value_template: "{{ square_gif is defined and square_gif.returncode | default(1) == 0 }}"
-                      then:
-                        - variables:
-                            gif_url: >
-                              /local/frigate_vision/{{ review_id | regex_replace('[^A-Za-z0-9._-]', '') }}.gif
                 - variables:
                     show_gif: true
                     send: true

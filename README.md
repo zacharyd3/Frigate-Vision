@@ -56,26 +56,6 @@ Every update replaces the same notification, and only the first one makes a soun
 * **Taller image on Android**: Android gives an expanded notification a fixed height, and the image gets whatever the text and buttons leave, so tall (hallway-mode) cameras get cropped. Set *Notification Text* to *Image only* (no title or text at all) and remove *Action Buttons* you don't need to give the image as much room as possible. Tapping the notification still opens the review in Frigate, where the GenAI summary is shown.
 * **Custom topic prefix**: if you changed Frigate's MQTT `topic_prefix`, update *Frigate Reviews MQTT Topic* in Advanced Options.
 
-#### 📱 Portrait (9:16) cameras
-
-Phones crop the notification image to a fixed shape (square on many Android phones), so a portrait camera loses its top and bottom. The GIF itself is fine, and a watch that draws the image itself shows all of it. To see the whole frame on the phone too, have Home Assistant pad the GIF into a square with ffmpeg (already included in Home Assistant):
-
-1. Create the folder `/config/www/frigate_vision`. If `/config/www` didn't exist before, restart Home Assistant so it starts serving `/local`.
-2. Add this to `configuration.yaml`, replacing `FRIGATE_HOST` with the address Home Assistant uses to reach Frigate's internal, unauthenticated API port `5000` (e.g. `ccab4aaf-frigate` for the Frigate add-on, or `192.168.1.10`), then restart:
-
-   ```yaml
-   shell_command:
-     frigate_vision_square_gif: >-
-       ffmpeg -y -loglevel error
-       -i http://FRIGATE_HOST:5000/api/review/{{ review_id }}/preview
-       -filter_complex "pad='max(iw,ih)':'max(iw,ih)':(ow-iw)/2:(oh-ih)/2,split[a][b];[a]palettegen[p];[b][p]paletteuse"
-       -loop 0 /config/www/frigate_vision/{{ review_id }}.gif
-   ```
-
-3. In the blueprint's Advanced Options, set *Square GIF Command* to `shell_command.frigate_vision_square_gif`.
-
-If the command fails, the notification falls back to Frigate's GIF. Files in `/config/www` can be opened by anyone who can reach your Home Assistant URL without logging in, and they aren't deleted automatically, so clear out the `frigate_vision` folder now and then.
-
 ---
 
 ### 🧠 TL;DR:
