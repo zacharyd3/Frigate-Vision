@@ -121,11 +121,12 @@ blueprint:
         genai_summary:
           name: Use Frigate GenAI Summary
           description: >
-            When Frigate generates a GenAI review summary (Frigate 0.17+ with
-            review -> genai enabled), use its title as the notification title
-            (flagged with a warning icon if Frigate rates it as a potential
-            threat). Has no effect if GenAI review summaries are not
-            configured in Frigate.
+            Wait for Frigate's GenAI review summary (Frigate 0.17+ with
+            review -> genai enabled). With "Advanced" notification text its
+            title and short summary become the notification text (flagged with
+            a warning icon if Frigate rates it as a potential threat); in any
+            mode it enables the "Summary" button. Has no effect if GenAI
+            review summaries are not configured in Frigate.
           default: true
           selector:
             boolean: {}
@@ -133,16 +134,22 @@ blueprint:
         message_style:
           name: Notification Text
           description: >
-            Android gives an expanded notification a fixed height, so every
-            line of text takes room away from the image. "Image only" sends no
-            title or text at all, for the biggest possible image; tap the
-            notification to see the details in Frigate. The camera still
-            shows as the notification group.
+            "Basic" uses the camera name as the title and says what was
+            detected, e.g. "Zach was detected" (or "Person was detected" if
+            no name is recognized). "Advanced" uses Frigate's GenAI title and
+            short summary once they arrive, showing what was detected and the
+            camera until then. Android gives an expanded notification a fixed
+            height, so every line of text takes room away from the image.
+            "Image only" sends no title or text at all, for the biggest
+            possible image; tap the notification to see the details in
+            Frigate. The camera still shows as the notification group.
           default: summary
           selector:
             select:
               options:
-                - label: GenAI short summary (camera and duration until it arrives)
+                - label: Basic (camera name and what was detected)
+                  value: basic
+                - label: Advanced (GenAI title and short summary)
                   value: summary
                 - label: Image only (no title or text)
                   value: image
@@ -489,12 +496,18 @@ actions:
                     {{ '%d:%02d' | format(s // 60, s % 60) }}
                   {% endif %}
                 n_threat: "{{ summary.potential_threat_level | default(0, true) | int(0) }}"
+                # Basic: the camera name. Advanced: Frigate's GenAI title, or
+                # what was detected until it arrives.
                 n_title: >
-                  {% set t = summary.title | default('', true) or n_subject ~ ' detected' %}
-                  {{ ('🚨 ' if n_threat >= 2 else '⚠️ ' if n_threat == 1 else '') ~ t }}
-                # Frigate's short summary, or the camera and duration until it
-                # arrives. After the Summary button: the full scene description
-                # and observations. Not used in "Image only" mode.
+                  {% if input_message_style == 'basic' %}{{ camera_name }}
+                  {% else %}
+                    {% set t = summary.title | default('', true) or n_subject ~ ' detected' %}
+                    {{ ('🚨 ' if n_threat >= 2 else '⚠️ ' if n_threat == 1 else '') ~ t }}
+                  {% endif %}
+                # Basic: what was detected. Advanced: Frigate's short summary,
+                # or the camera and duration until it arrives. After the
+                # Summary button: the full scene description and observations.
+                # Not used in "Image only" mode.
                 n_message: >
                   {% if show_summary %}
                     {% set ns = namespace(parts=[]) %}
@@ -510,6 +523,7 @@ actions:
                       {% endif %}
                     {% endfor %}
                     {{ ns.parts | join('\n\n') }}
+                  {% elif input_message_style == 'basic' %}{{ n_subject }} was detected
                   {% elif input_message_style == 'summary'
                        and summary.shortSummary | default('', true) %}{{ summary.shortSummary }}
                   {% else %}{{ camera_name }}{{ ' (' ~ n_duration ~ ')' if n_duration else '' }}{% endif %}

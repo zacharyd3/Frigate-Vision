@@ -21,7 +21,7 @@ Introducing **Frigate Vision**: a blueprint that gives you Frigate notifications
 1. **🚨 Review starts.** Frigate publishes a new review item (alert or detection) on `frigate/reviews`. You immediately get a notification with the object's thumbnail. You can turn this off if you only want the GIF.
 2. **🏷️ While it's happening:** if Frigate recognizes someone (face recognition, LPR, etc.) or spots more objects, the same notification updates silently, e.g. *"Zach detected"*.
 3. **🎞️ Review ends.** The blueprint waits for Frigate to close the review, then swaps the image for an **animated GIF covering the whole review** (sped up, like Frigate's review timeline previews) and adds the duration, e.g. *"Back Door Cam (0:42)"*.
-4. **🧠 Frigate GenAI (optional).** If you've enabled [GenAI review summaries](https://docs.frigate.video/configuration/genai/review_summaries) in Frigate 0.17+, the notification updates once more. Frigate's title becomes the notification title (with ⚠️/🚨 if Frigate rates it as a potential threat) and its one-line short summary becomes the message.
+4. **🧠 Frigate GenAI (optional).** If you've enabled [GenAI review summaries](https://docs.frigate.video/configuration/genai/review_summaries) in Frigate 0.17+, the notification updates once more. With *Notification Text* set to *Advanced* (the default), Frigate's title becomes the notification title (with ⚠️/🚨 if Frigate rates it as a potential threat) and its one-line short summary becomes the message.
 5. **📖 Want the details?** Tap the **Summary** button. The notification is replaced with Frigate's full scene description and observations, shown as plain text so it fits in the notification shade.
 
 Every update replaces the same notification, and only the first one makes a sound.
@@ -32,6 +32,7 @@ Every update replaces the same notification, and only the first one makes a soun
 * **Filters** for review severity (alert/detection), labels and zones. A review that later upgrades to an alert or enters a zone still triggers.
 * **Cooldown** between new notifications
 * **Multiple notification devices**, grouped and channelled per camera, so the camera name shows in the notification group
+* **Notification text**: *Basic* (camera name as the title, e.g. *"Zach was detected"* as the text), *Advanced* (Frigate's GenAI title and short summary) or *Image only* (no text, biggest image)
 * **Actions**: *Summary* (full GenAI description), *View Clip* (through Home Assistant) and *Open in Frigate* (links straight to the review)
 
 ---
