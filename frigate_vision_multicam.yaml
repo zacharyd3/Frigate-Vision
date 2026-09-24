@@ -661,7 +661,7 @@ actions:
       frigate_review_url: >
         {% set f = input_frigate_url | trim | regex_replace('/+$', '') %}
         {% if f %}{{ f }}/review?id={{ journey_id }}{% endif %}
-      zero_width_space: "​"
+      zero_width_space: "\u200B"
 
       # State for the loop below
       #   stage: active -> ended -> [render ->] finish -> done
