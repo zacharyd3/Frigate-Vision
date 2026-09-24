@@ -82,12 +82,18 @@ blueprint:
         zones:
           name: Zones
           description: >
-            Only notify once the review has entered one of these Frigate zones.
-            Leave empty to ignore zones.
+            Only notify if the review was ever in one of these Frigate zones
+            (type your zone names exactly as in your Frigate config, e.g.
+            driveway or front_yard). A review that enters a zone partway
+            through notifies at that point, and one that has since left the
+            zone still counts. Leave empty to ignore zones.
           default: []
           selector:
-            text:
+            select:
               multiple: true
+              custom_value: true
+              sort: false
+              options: []
 
         cooldown:
           name: Cooldown
@@ -181,9 +187,10 @@ blueprint:
         sublabel:
           name: Show Recognized Names
           description: >
-            Use names Frigate recognized (face recognition, LPR, etc.) instead
-            of the object label, e.g. "Zach detected" instead of "Person
-            detected".
+            Use the names of people Frigate recognized (face recognition)
+            instead of the object label, e.g. "Zach detected" instead of
+            "Person detected". Names given to other objects, such as known
+            license plates on cars, are not shown.
           default: true
           selector:
             boolean: {}
@@ -335,7 +342,9 @@ variables:
   watched_cameras: >
     {{ input_cameras | map('replace', 'camera.', '') | list }}
   labels: "{{ input_labels | map('lower') | list }}"
-  zones: "{{ input_zones | map('lower') | list }}"
+  zones: >
+    {{ input_zones | map('trim') | map('lower') | map('replace', ' ', '_')
+       | map('replace', '-', '_') | reject('eq', '') | list }}
 
   should_notify: >
     {% macro matches(r) -%}
@@ -345,7 +354,9 @@ variables:
       {%- set cam_ok = (r.camera | default('') | lower | replace('-', '_')) in watched_cameras -%}
       {%- set sev_ok = r.severity | default('') in input_severity -%}
       {%- set label_ok = not labels or found | select('in', labels) | list | count > 0 -%}
-      {%- set zone_ok = not zones or d.zones | default([]) | map('lower') | select('in', zones) | list | count > 0 -%}
+      {%- set in_zones = d.zones | default([]) | map('lower') | map('replace', ' ', '_')
+            | map('replace', '-', '_') | list -%}
+      {%- set zone_ok = not zones or in_zones | select('in', zones) | list | count > 0 -%}
       {{- cam_ok and sev_ok and label_ok and zone_ok -}}
     {%- endmacro %}
     {% set p = trigger.payload_json | default({}) %}
@@ -393,11 +404,28 @@ actions:
       input_gif_delay: !input gif_delay
       input_square_gif_command: !input square_gif_command
       input_genai_timeout: !input genai_timeout
+      input_mqtt_topic: !input mqtt_topic
+
+      # Frigate's tracked object topic, used to tell which recognized names
+      # (sub labels) belong to people
+      events_topic: >
+        {{ input_mqtt_topic | trim | regex_replace('reviews$', 'events') }}
 
       review: "{{ trigger.payload_json.after }}"
       review_id: "{{ review.id }}"
       camera: "{{ review.camera }}"
       event_id: "{{ (review.data.detections | default([]) | first) or '' }}"
+
+      # Names of recognized people. A review only lists its sub labels, not
+      # which object each belongs to, so they are only taken from the review
+      # when every object in it is a person. Otherwise names come from
+      # person objects on Frigate's events topic (see the loop below).
+      person_names: >
+        {% set d = review.data | default({}) %}
+        {% set others = d.objects | default([]) | map('replace', '-verified', '')
+             | reject('in', ['person', 'face']) | list %}
+        {{ [] if others else d.sub_labels | default([]) | map('string')
+             | reject('eq', '') | unique | list }}
 
       camera_name: >
         {% set name = camera | replace('_', ' ') | replace('-', ' ') | title %}
@@ -476,8 +504,7 @@ actions:
             - variables:
                 n_subject: >
                   {% set d = review.data | default({}) %}
-                  {% set names = (d.sub_labels | default([])) if input_sublabel else [] %}
-                  {% set names = names | map('string') | reject('eq', '') | unique | list %}
+                  {% set names = person_names if input_sublabel else [] %}
                   {% set things = (d.objects | default([]) + d.audio | default([]))
                        | map('replace', '-verified', '') | map('replace', '_', ' ')
                        | unique | list %}
@@ -577,7 +604,8 @@ actions:
 
         - choose:
 
-            # Review in progress: follow updates until Frigate ends it
+            # Review in progress: follow updates until Frigate ends it, and
+            # pick up the names of people recognized on this camera
             - conditions: "{{ stage == 'active' }}"
               sequence:
                 - wait_for_trigger:
@@ -585,19 +613,45 @@ actions:
                       topic: !input mqtt_topic
                       value_template: "{{ value_json.after.id }}"
                       payload: "{{ review_id }}"
+                    - trigger: mqtt
+                      topic: "{{ events_topic }}"
+                      value_template: "{{ value_json.after.camera }}|{{ value_json.after.label }}|{{ 'named' if value_json.after.sub_label else '' }}"
+                      payload: "{{ camera }}|person|named"
                   timeout:
                     seconds: "{{ max_wait_seconds }}"
                   continue_on_timeout: true
                 - variables:
+                    object_update: >
+                      {{ wait.trigger is not none and wait.trigger.topic == events_topic }}
                     previous: "{{ review }}"
+                    previous_names: "{{ person_names }}"
                     review: >
-                      {{ wait.trigger.payload_json.after if wait.trigger else review }}
+                      {{ wait.trigger.payload_json.after
+                         if wait.trigger and not object_update else review }}
                     stage: >
                       {{ 'ended' if not wait.trigger
-                         or wait.trigger.payload_json.type == 'end' else 'active' }}
+                         or (not object_update and wait.trigger.payload_json.type == 'end')
+                         else 'active' }}
+                    person_names: >
+                      {% set ns = namespace(names=person_names) %}
+                      {% if object_update %}
+                        {% set o = wait.trigger.payload_json.after %}
+                        {% set name = o.sub_label[0] if o.sub_label is list else o.sub_label %}
+                        {% if name and (o.id in review.data.detections | default([])
+                             or o.start_time | float(0) >= review.start_time | float(0)) %}
+                          {% set ns.names = ns.names + [name | string] %}
+                        {% endif %}
+                      {% else %}
+                        {% set d = review.data | default({}) %}
+                        {% set others = d.objects | default([]) | map('replace', '-verified', '')
+                             | reject('in', ['person', 'face']) | list %}
+                        {% if not others %}
+                          {% set ns.names = ns.names + (d.sub_labels | default([]) | map('string') | list) %}
+                        {% endif %}
+                      {% endif %}
+                      {{ ns.names | reject('eq', '') | unique | list }}
                     names_changed: >
-                      {{ input_sublabel and (review.data.sub_labels | default([]) | sort)
-                         != (previous.data.sub_labels | default([]) | sort) }}
+                      {{ input_sublabel and (person_names | sort) != (previous_names | sort) }}
                     objects_changed: >
                       {{ (review.data.objects | default([]) | sort)
                          != (previous.data.objects | default([]) | sort) }}
