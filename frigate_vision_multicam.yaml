@@ -313,7 +313,10 @@ blueprint:
           name: Notification Title
           description: >
             "What was detected" e.g. "Zach detected". "Cameras" e.g.
-            "Front Door Cam → Back Door Cam". "None" sends no title.
+            "Front Door Cam → Back Door Cam". "Advanced" uses Frigate's GenAI
+            title (Frigate 0.17+ with review -> genai enabled) once it
+            arrives, with ⚠️/🚨 if Frigate rates it as a potential threat,
+            and what was detected until then. "None" sends no title.
           default: subject
           selector:
             select:
@@ -322,6 +325,8 @@ blueprint:
                   value: subject
                 - label: Cameras
                   value: cameras
+                - label: Advanced (GenAI title)
+                  value: summary
                 - label: None
                   value: none
 
@@ -331,7 +336,13 @@ blueprint:
             "Cameras" lists the cameras in the order the object reached them,
             with the journey length once it ends, e.g. "Front Door Cam → Back
             Door Cam (0:05)". "What was detected" e.g. "Zach was detected".
-            "None" sends no text.
+            "Advanced" uses Frigate's GenAI short summary once it arrives,
+            and the cameras until then. "None" sends no text.
+
+
+            With "Advanced", every camera's review in the journey can get its
+            own GenAI summary. The one Frigate rates as the biggest potential
+            threat is used, or the first camera's if they are rated the same.
           default: cameras
           selector:
             select:
@@ -340,6 +351,8 @@ blueprint:
                   value: cameras
                 - label: What was detected
                   value: subject
+                - label: Advanced (GenAI short summary)
+                  value: summary
                 - label: None
                   value: none
 
@@ -449,6 +462,20 @@ blueprint:
           default: shell_command.frigate_vision_multicam
           selector:
             text: {}
+
+        genai_timeout:
+          name: GenAI Summary Timeout (seconds)
+          description: >
+            With an "Advanced" title or text, how long after the journey ends
+            to keep waiting for Frigate's GenAI summaries.
+          default: 90
+          selector:
+            number:
+              min: 10
+              max: 600
+              step: 5
+              unit_of_measurement: seconds
+              mode: slider
 
         pre_padding:
           name: Lead-in (seconds)
@@ -562,6 +589,8 @@ actions:
       input_notify_immediately: !input notify_immediately
       input_title_style: !input title_style
       input_message_style: !input message_style
+      input_genai_timeout: !input genai_timeout
+      use_genai: "{{ 'summary' in [input_title_style, input_message_style] }}"
       input_buttons: !input buttons
       input_sublabel: !input sublabel
       input_append: !input append
@@ -664,13 +693,26 @@ actions:
       zero_width_space: "\u200B"
 
       # State for the loop below
-      #   stage: active -> ended -> [render ->] finish -> done
+      #   stage: active -> ended -> [render -> poll ->] summary -> finish -> done
+      # "hold" waits until hold_until (picking up GenAI summaries meanwhile),
+      # then moves on to then_stage.
       stage: active
       send: "{{ input_notify_immediately }}"
       gif_url: ""
       alerted: false
       shown_cameras: []
       shown_names: []
+      shown_summary: ""
+      # GenAI summaries of the journey's reviews: [{id, start, threat, meta}]
+      summaries: []
+      hold_until: 0
+      then_stage: ""
+      ended_at: 0
+      job: ""
+      render_status: skipped
+      render_url: ""
+      render_error: ""
+      render_deadline: 0
 
   # ── Journey loop ───────────────────────────────────────────────────────────
   # Each pass (1) sends/updates the notification if `send` is set, then
@@ -703,6 +745,12 @@ actions:
                 {% endfor %}
               {% endif %}
               {{ ns.names | reject('eq', '') | unique | list }}
+            # The GenAI summary to show: the one rated the biggest potential
+            # threat, or the first camera's if they are rated the same
+            summary_pick: >
+              {{ summaries | sort(attribute='start') | sort(attribute='threat', reverse=true)
+                 | first | default({}) }}
+            summary: "{{ summary_pick.meta | default({}) }}"
 
         - if:
             - condition: template
@@ -741,11 +789,17 @@ actions:
                     {% set s = (end - start) | round(0) | int %}
                     {{ '%d:%02d' | format(s // 60, s % 60) }}
                   {% endif %}
+                n_threat: "{{ summary.potential_threat_level | default(0, true) | int(0) }}"
                 n_title: >
                   {% if input_title_style == 'cameras' %}{{ n_cameras }}
+                  {% elif input_title_style == 'summary' %}
+                    {% set t = summary.title | default('', true) or n_subject ~ ' detected' %}
+                    {{ ('🚨 ' if n_threat >= 2 else '⚠️ ' if n_threat == 1 else '') ~ t }}
                   {% else %}{{ n_subject }} detected{% endif %}
                 n_message: >
                   {% if input_message_style == 'subject' %}{{ n_subject }} was detected
+                  {% elif input_message_style == 'summary'
+                       and summary.shortSummary | default('', true) %}{{ summary.shortSummary }}
                   {% else %}{{ n_cameras }}{{ ' (' ~ n_duration ~ ')' if n_duration else '' }}{% endif %}
                 n_gif_open_url: "{{ base_url ~ gif_url if gif_url else '' }}"
                 n_tap_url: >
@@ -793,6 +847,7 @@ actions:
                 alerted: true
                 shown_cameras: "{{ path }}"
                 shown_names: "{{ person_names }}"
+                shown_summary: "{{ summary_pick.id | default('') }}"
 
         - choose:
 
@@ -865,6 +920,19 @@ actions:
                           {% endif %}
                         last_end_at: >
                           {{ now().timestamp() if (known or linkable) and msg_type == 'end' else last_end_at }}
+                        summaries: >
+                          {% set p = wait.trigger.payload_json | default({})
+                               if wait.trigger is not none else {} %}
+                          {% set a = p.after | default({}) %}
+                          {% set m = members | selectattr('id', 'eq', a.id | default('')) | list %}
+                          {% set meta = (a.data | default({})).metadata | default({}, true) %}
+                          {% if use_genai and p.type | default('') == 'genai' and m and meta %}
+                            {{ summaries | rejectattr('id', 'eq', a.id) | list
+                               + [{'id': a.id, 'start': m[0].start_time, 'meta': meta,
+                                   'threat': meta.potential_threat_level | default(0, true) | int(0)}] }}
+                          {% else %}
+                            {{ summaries }}
+                          {% endif %}
                         stage: >
                           {{ 'ended' if wait.trigger is none
                              and now().timestamp() >= started_at + max_journey_seconds else 'active' }}
@@ -898,93 +966,151 @@ actions:
                           {% endif %}
                           {{ ns.names | reject('eq', '') | unique | list }}
                     - variables:
+                        new_summary_id: >
+                          {{ (summaries | sort(attribute='start') | sort(attribute='threat', reverse=true)
+                              | first | default({})).id | default('') }}
                         # Only re-send when the notification would change
                         send: >
-                          {{ send and (new_path != shown_cameras
-                             or (input_sublabel and (new_names | sort) != (shown_names | sort))) }}
+                          {{ input_notify_immediately
+                             and ((send and (new_path != shown_cameras
+                                   or (input_sublabel and (new_names | sort) != (shown_names | sort))))
+                                  or new_summary_id != shown_summary) }}
 
-            # Journey over: first show Frigate's own GIF of the first camera
-            # (once Frigate has finished it), so there is always a GIF even if
-            # the custom one can't be built
+            # Wait until hold_until, then go on to then_stage. With a GenAI
+            # title or text, keep listening for GenAI summaries meanwhile and
+            # update the notification when a better one comes in.
+            - conditions: "{{ stage == 'hold' }}"
+              sequence:
+                - if:
+                    - condition: template
+                      value_template: "{{ use_genai }}"
+                  then:
+                    - wait_for_trigger:
+                        - trigger: mqtt
+                          topic: !input mqtt_topic
+                          value_template: "{{ value_json.type }}"
+                          payload: genai
+                      timeout:
+                        seconds: "{{ [hold_until - now().timestamp(), 0] | max | round(1) }}"
+                      continue_on_timeout: true
+                    - variables:
+                        summaries: >
+                          {% set p = wait.trigger.payload_json | default({})
+                               if wait.trigger is not none else {} %}
+                          {% set a = p.after | default({}) %}
+                          {% set m = members | selectattr('id', 'eq', a.id | default('')) | list %}
+                          {% set meta = (a.data | default({})).metadata | default({}, true) %}
+                          {% if use_genai and p.type | default('') == 'genai' and m and meta %}
+                            {{ summaries | rejectattr('id', 'eq', a.id) | list
+                               + [{'id': a.id, 'start': m[0].start_time, 'meta': meta,
+                                   'threat': meta.potential_threat_level | default(0, true) | int(0)}] }}
+                          {% else %}
+                            {{ summaries }}
+                          {% endif %}
+                  else:
+                    - delay:
+                        seconds: "{{ [hold_until - now().timestamp(), 0] | max | round(1) }}"
+                - variables:
+                    new_summary_id: >
+                      {{ (summaries | sort(attribute='start') | sort(attribute='threat', reverse=true)
+                          | first | default({})).id | default('') }}
+                    send: "{{ alerted and new_summary_id != shown_summary }}"
+                    stage: >
+                      {{ then_stage if now().timestamp() >= hold_until - 0.05
+                         or (then_stage == 'finish' and summaries | count >= members | count)
+                         else 'hold' }}
+
+            # Journey over: once Frigate has finished its own GIF of the first
+            # camera (~10s after the review), show it, so there is always a
+            # GIF even if the custom one can't be built. Then wait for Frigate
+            # to save the recordings before building the journey GIF.
             - conditions: "{{ stage == 'ended' }}"
               sequence:
-                - delay:
-                    seconds: "{{ [last_end_at + 10 - now().timestamp(), 0] | max | round(1) }}"
                 - variables:
-                    ended_at: "{{ now().timestamp() }}"
-                    gif_url: "{{ frigate_gif_url }}"
-                    send: true
-                    stage: "{{ 'render' if frigate_api else 'finish' }}"
+                    ready: "{{ now().timestamp() >= last_end_at + 10 - 0.05 }}"
+                - variables:
+                    ended_at: "{{ now().timestamp() if ready else ended_at }}"
+                    gif_url: "{{ frigate_gif_url if ready else gif_url }}"
+                    send: "{{ ready }}"
+                    hold_until: >
+                      {{ now().timestamp() + input_recording_delay if ready else last_end_at + 10 }}
+                    then_stage: "{{ 'render' if ready else 'ended' }}"
+                    stage: "{{ 'hold' if not ready or frigate_api else 'summary' }}"
 
-            # Then wait for Frigate to save the recordings, have the script
-            # build the journey GIF in the background, check on it, and swap
-            # it in once it's ready
+            # Have the script build the journey GIF in the background
             - conditions: "{{ stage == 'render' }}"
               sequence:
                 - variables:
                     job: >
                       {{ journey_id }}-{{ '%04x%04x' | format(range(65536) | random, range(65536) | random) }}
-                    render_status: running
-                    render_url: ""
-                    render_error: ""
-                - delay:
-                    seconds: "{{ [ended_at + input_recording_delay - now().timestamp(), 0] | max | round(1) }}"
-                - sequence:
+                    render_args: >
+                      render job={{ job }} url={{ frigate_api }}
+                      size={{ input_gif_size | int }} shape={{ input_gif_shape }}
+                      background={{ input_gif_background }}
+                      fps={{ input_gif_fps | int }} speed={{ input_gif_speed }}
+                      max_length={{ input_gif_max_length }}
+                      pre={{ input_pre_padding }} post={{ input_post_padding }}
+                      labels={{ 1 if input_camera_labels else 0 }}
+                      keep_hours={{ [48, (input_notification_timeout / 60) | round(0, 'ceil') | int + 1] | max }}
+                      {% for m in members | sort(attribute='start_time') -%}
+                        review={{ m.camera }}@{{ m.start_time }}@{{ m.end_time if m.end_time is not none else now().timestamp() }}{{ ' ' }}
+                      {%- endfor %}
+                    render_response: {}
+                - action: "{{ input_shell_service }}"
+                  continue_on_error: true
+                  data:
+                    args: "{{ render_args | trim }}"
+                  response_variable: render_response
+                - variables:
+                    render_status: >
+                      {{ (render_response.stdout | default('')
+                          | regex_findall('"status": "(\\w+)"') | first | default('failed'))
+                         | replace('started', 'running') }}
+                    render_error: >
+                      {{ render_response.stdout | default('')
+                         | regex_findall('"error": "([^"]*)"') | first
+                         | default(render_response.stderr | default('the shell_command did not run', true)) }}
+                    render_deadline: "{{ now().timestamp() + input_render_timeout }}"
+                    hold_until: "{{ now().timestamp() + 3 }}"
+                    then_stage: poll
+                    send: false
+                    stage: "{{ 'hold' if render_status == 'running' else 'poll' }}"
+
+            # Check on the GIF every few seconds, and swap it in once it's ready
+            - conditions: "{{ stage == 'poll' }}"
+              sequence:
+                - if:
+                    - condition: template
+                      value_template: "{{ render_status == 'running' }}"
+                  then:
                     - variables:
-                        render_args: >
-                          render job={{ job }} url={{ frigate_api }}
-                          size={{ input_gif_size | int }} shape={{ input_gif_shape }}
-                          background={{ input_gif_background }}
-                          fps={{ input_gif_fps | int }} speed={{ input_gif_speed }}
-                          max_length={{ input_gif_max_length }}
-                          pre={{ input_pre_padding }} post={{ input_post_padding }}
-                          labels={{ 1 if input_camera_labels else 0 }}
-                          keep_hours={{ [48, (input_notification_timeout / 60) | round(0, 'ceil') | int + 1] | max }}
-                          {% for m in members | sort(attribute='start_time') -%}
-                            review={{ m.camera }}@{{ m.start_time }}@{{ m.end_time if m.end_time is not none else now().timestamp() }}{{ ' ' }}
-                          {%- endfor %}
-                        render_deadline: "{{ now().timestamp() + input_render_timeout }}"
-                        render_status: running
-                        render_response: {}
+                        status_response: {}
                     - action: "{{ input_shell_service }}"
                       continue_on_error: true
                       data:
-                        args: "{{ render_args | trim }}"
-                      response_variable: render_response
+                        args: status job={{ job }}
+                      response_variable: status_response
                     - variables:
                         render_status: >
-                          {{ (render_response.stdout | default('')
-                              | regex_findall('"status": "(\\w+)"') | first | default('failed'))
-                             | replace('started', 'running') }}
+                          {{ status_response.stdout | default('')
+                             | regex_findall('"status": "(\\w+)"') | first | default('running') }}
+                        render_url: >
+                          {{ status_response.stdout | default('')
+                             | regex_findall('"url": "([^"]+)"') | first | default('') }}
                         render_error: >
-                          {{ render_response.stdout | default('')
-                             | regex_findall('"error": "([^"]*)"') | first
-                             | default(render_response.stderr | default('the shell_command did not run', true)) }}
-                    - repeat:
-                        until:
-                          - condition: template
-                            value_template: >
-                              {{ render_status != 'running' or now().timestamp() >= render_deadline }}
-                        sequence:
-                          - delay:
-                              seconds: 3
-                          - variables:
-                              status_response: {}
-                          - action: "{{ input_shell_service }}"
-                            continue_on_error: true
-                            data:
-                              args: status job={{ job }}
-                            response_variable: status_response
-                          - variables:
-                              render_status: >
-                                {{ status_response.stdout | default('')
-                                   | regex_findall('"status": "(\\w+)"') | first | default('running') }}
-                              render_url: >
-                                {{ status_response.stdout | default('')
-                                   | regex_findall('"url": "([^"]+)"') | first | default('') }}
-                              render_error: >
-                                {{ status_response.stdout | default('')
-                                   | regex_findall('"error": "([^"]*)"') | first | default('') }}
+                          {{ status_response.stdout | default('')
+                             | regex_findall('"error": "([^"]*)"') | first | default('') }}
+                - if:
+                    - condition: template
+                      value_template: >
+                        {{ render_status == 'running' and now().timestamp() < render_deadline }}
+                  then:
+                    - variables:
+                        hold_until: "{{ now().timestamp() + 3 }}"
+                        then_stage: poll
+                        send: false
+                        stage: hold
+                  else:
                     - if:
                         - condition: template
                           value_template: "{{ render_status != 'done' or not render_url }}"
@@ -998,11 +1124,23 @@ actions:
                               ({{ 'timed out' if render_status == 'running' else render_error }}),
                               keeping Frigate's GIF of the first camera. The script's log
                               is /config/frigate_vision/jobs/{{ job }}.log
+                    - variables:
+                        send: "{{ render_status == 'done' and render_url | length > 0 }}"
+                        gif_url: >
+                          {{ render_url if render_status == 'done' and render_url else gif_url }}
+                        stage: summary
+
+            # GIF sent: with a GenAI title or text, keep waiting for the
+            # summaries of any reviews that don't have one yet
+            - conditions: "{{ stage == 'summary' }}"
+              sequence:
                 - variables:
-                    gif_url: >
-                      {{ render_url if render_status == 'done' and render_url else gif_url }}
-                    send: "{{ render_status == 'done' and render_url | length > 0 }}"
-                    stage: finish
+                    hold_until: "{{ ended_at + input_genai_timeout }}"
+                    then_stage: finish
+                    send: false
+                    stage: >
+                      {{ 'hold' if use_genai and summaries | count < members | count
+                         and now().timestamp() < ended_at + input_genai_timeout else 'finish' }}
 
             # GIF sent: nothing left to do
             - conditions: "{{ stage == 'finish' }}"
