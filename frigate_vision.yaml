@@ -101,7 +101,8 @@ blueprint:
             Minimum time between new notifications from this automation.
             Updates to a notification that was already sent (GIF, summary,
             names) are never blocked. Use a separate automation per camera for
-            per-camera cooldowns.
+            per-camera cooldowns. With Zones set, the cooldown starts when a
+            matching review starts, even if it never reaches one of the zones.
           default:
             hours: 0
             minutes: 0
@@ -325,7 +326,9 @@ blueprint:
 # Each Frigate review item gets its own run, so several cameras can be active
 # at once. Every message on the reviews topic is evaluated, but a run only
 # starts the first time a review matches the filters (on "new", or on the
-# "update" where it first gains a matching severity, label or zone).
+# "update" where it first gains a matching severity or label). Zones are
+# checked inside the run, because Frigate doesn't publish a review update
+# when an object enters a zone.
 # ---------------------------------------------------------------------------
 mode: parallel
 max: 100
@@ -358,10 +361,7 @@ variables:
       {%- set cam_ok = (r.camera | default('') | lower | replace('-', '_')) in watched_cameras -%}
       {%- set sev_ok = r.severity | default('') in input_severity -%}
       {%- set label_ok = not labels or found | select('in', labels) | list | count > 0 -%}
-      {%- set in_zones = d.zones | default([]) | map('lower') | map('replace', ' ', '_')
-            | map('replace', '-', '_') | list -%}
-      {%- set zone_ok = not zones or in_zones | select('in', zones) | list | count > 0 -%}
-      {{- cam_ok and sev_ok and label_ok and zone_ok -}}
+      {{- cam_ok and sev_ok and label_ok -}}
     {%- endmacro %}
     {% set p = trigger.payload_json | default({}) %}
     {% if p.type | default('') == 'new' %}
@@ -418,6 +418,75 @@ actions:
       review: "{{ trigger.payload_json.after }}"
       review_id: "{{ review.id }}"
       camera: "{{ review.camera }}"
+
+      max_wait_seconds: >
+        {{ (input_max_review_wait.hours | default(0)) * 3600
+           + (input_max_review_wait.minutes | default(0)) * 60
+           + (input_max_review_wait.seconds | default(0)) }}
+
+      in_zone: >
+        {{ not zones or review.data.zones | default([]) | map('lower')
+             | map('replace', ' ', '_') | map('replace', '-', '_')
+             | select('in', zones) | list | count > 0 }}
+      review_ended: false
+
+  # ── Zones ──────────────────────────────────────────────────────────────────
+  # Frigate adds zones to a review without publishing an update, so a review
+  # that reaches a zone partway through often only shows it in its "end"
+  # message. Until then, watch this camera's tracked objects on the events
+  # topic, which are published as soon as they enter a zone.
+  - if:
+      - condition: template
+        value_template: "{{ not in_zone }}"
+    then:
+      - repeat:
+          until:
+            - condition: template
+              value_template: "{{ in_zone or review_ended }}"
+          sequence:
+            - wait_for_trigger:
+                - trigger: mqtt
+                  topic: !input mqtt_topic
+                  value_template: "{{ value_json.after.id }}"
+                  payload: "{{ review_id }}"
+                - trigger: mqtt
+                  topic: "{{ events_topic }}"
+                  value_template: "{{ value_json.after.camera }}"
+                  payload: "{{ camera }}"
+              timeout:
+                seconds: "{{ max_wait_seconds }}"
+              continue_on_timeout: true
+            - variables:
+                object_update: >
+                  {{ wait.trigger is not none and wait.trigger.topic == events_topic }}
+                review: >
+                  {{ wait.trigger.payload_json.after
+                     if wait.trigger and not object_update else review }}
+                review_ended: >
+                  {{ not wait.trigger
+                     or (not object_update and wait.trigger.payload_json.type == 'end') }}
+                in_zone: >
+                  {% if object_update %}
+                    {% set o = wait.trigger.payload_json.after %}
+                    {% set z = o.entered_zones | default([], true) + o.current_zones | default([], true) %}
+                    {% set in_review = o.id in review.data.detections | default([])
+                         or o.start_time | float(0) >= review.start_time | float(0) %}
+                    {% set label_ok = not labels or (o.label | default('') | lower) in labels %}
+                    {{ in_review and label_ok and not o.false_positive | default(false)
+                       and z | map('lower') | map('replace', ' ', '_') | map('replace', '-', '_')
+                         | select('in', zones) | list | count > 0 }}
+                  {% else %}
+                    {{ review.data.zones | default([]) | map('lower')
+                         | map('replace', ' ', '_') | map('replace', '-', '_')
+                         | select('in', zones) | list | count > 0 }}
+                  {% endif %}
+      - if:
+          - condition: template
+            value_template: "{{ not in_zone }}"
+        then:
+          - stop: Review never entered a selected zone
+
+  - variables:
       event_id: "{{ (review.data.detections | default([]) | first) or '' }}"
 
       # Names of recognized people. A review only lists its sub labels, not
@@ -477,14 +546,9 @@ actions:
       gif_open_url: >
         {{ input_base_url | trim | regex_replace('/+$', '') }}{{ gif_url }}
 
-      max_wait_seconds: >
-        {{ (input_max_review_wait.hours | default(0)) * 3600
-           + (input_max_review_wait.minutes | default(0)) * 60
-           + (input_max_review_wait.seconds | default(0)) }}
-
       # State for the notification loop below
       #   stage: active -> ended -> [summary ->] finish -> [tap -> finish ->] done
-      stage: active
+      stage: "{{ 'ended' if review_ended else 'active' }}"
       send: "{{ input_notify_immediately }}"
       show_gif: false
       show_summary: false
