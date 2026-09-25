@@ -1,18 +1,3 @@
-# Frigate Vision - History dashboard
-#
-# Needs the history package (frigate_vision_history.yaml) and "Record History"
-# turned on in the Frigate Vision blueprints (it is by default).
-#
-# To use: Settings -> Dashboards -> Add Dashboard -> New dashboard from
-# scratch, open it, then the pencil -> three dots -> Raw configuration editor,
-# and replace everything with this file. To add it to an existing dashboard
-# instead, paste the view (from "- title: Camera History" down) under its
-# views:.
-#
-# Uses only built-in cards. With card-mod installed (HACS), the GIFs get
-# rounded corners and portrait GIFs are kept from getting taller than the
-# screen; without it the card_mod sections are ignored.
-
 title: Camera History
 views:
   - title: Camera History
@@ -23,13 +8,11 @@ views:
     sections:
       - type: grid
         cards:
-
           - type: heading
             heading: Camera History
             heading_style: title
             icon: mdi:cctv
             badges:
-              # When the latest event started, e.g. "5 minutes ago"
               - type: entity
                 entity: sensor.frigate_vision_history
                 show_icon: true
@@ -46,9 +29,82 @@ views:
                   confirmation:
                     text: Clear the camera history? GIFs and clips stay in Frigate.
 
-          # Today at a glance
+          # ── Today at a glance ────────────────────────────────────────────
           - type: markdown
             text_only: true
+            card_mod:
+              style:
+                ha-markdown$: |
+                  section {
+                    display: grid;
+                    grid-template-columns: repeat(3, 1fr);
+                    gap: 8px;
+                    margin: 0 0 10px;
+                  }
+                  section div {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 2px;
+                    padding: 12px 14px;
+                    border-radius: 16px;
+                    background: var(--card-background-color);
+                    border: 1px solid var(--divider-color);
+                  }
+                  section b {
+                    font-size: 26px;
+                    font-weight: 600;
+                    line-height: 1.1;
+                    font-variant-numeric: tabular-nums;
+                    color: var(--primary-text-color);
+                  }
+                  section small {
+                    font-size: 12px;
+                    color: var(--secondary-text-color);
+                  }
+                  section div:has(mark) {
+                    border-color: var(--warning-color);
+                    background: color-mix(in srgb, var(--warning-color) 12%, var(--card-background-color));
+                  }
+                  section mark {
+                    background: none;
+                    color: var(--warning-color);
+                  }
+                  nav {
+                    display: flex;
+                    flex-wrap: wrap;
+                    align-items: center;
+                    gap: 6px;
+                    margin: 6px 0 0;
+                  }
+                  nav small {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 6px;
+                    padding: 5px 10px;
+                    border-radius: 999px;
+                    font-size: 12px;
+                    font-weight: 500;
+                    background: var(--secondary-background-color);
+                    color: var(--primary-text-color);
+                  }
+                  nav small b {
+                    font-weight: 600;
+                    color: var(--secondary-text-color);
+                    font-variant-numeric: tabular-nums;
+                  }
+                  nav > ha-icon {
+                    --mdc-icon-size: 18px;
+                    color: var(--secondary-text-color);
+                    margin-right: 2px;
+                  }
+                  p {
+                    margin: 0;
+                    padding: 14px 16px;
+                    border-radius: 16px;
+                    background: var(--card-background-color);
+                    border: 1px solid var(--divider-color);
+                    color: var(--secondary-text-color);
+                  }
             content: >-
               {%- set events = state_attr('sensor.frigate_vision_history', 'events') or [] -%}
               {%- set today = events | selectattr('start', 'ge', today_at().timestamp()) | list -%}
@@ -59,22 +115,30 @@ views:
                      | sum(start=[]) | unique | list -%}
                 {%- set cams = today | map(attribute='cameras') | map('default', [])
                      | sum(start=[]) | list -%}
-                **Today:** {{ today | count }} event{{ 's' if today | count != 1 }}
-                · {{ alerts }} alert{{ 's' if alerts != 1 }}
-                {{- ' · ⚠️ ' ~ flagged ~ ' flagged' if flagged }}
-                {%- if names %}<br>**Seen:** {{ names | join(', ') }}{% endif %}
-                <br>{% for c in cams | unique | sort -%}
-                  {{ c | replace('_', ' ') | replace('-', ' ') | title }} {{ cams | select('eq', c) | list | count }}
-                  {{- ' · ' if not loop.last }}
+                <section>
+                <div><b>{{ today | count }}</b><small>Event{{ 's' if today | count != 1 }} today</small></div>
+                <div><b>{{ alerts }}</b><small>Alert{{ 's' if alerts != 1 }}</small></div>
+                <div>{% if flagged %}<b><mark>{{ flagged }}</mark></b>{% else %}<b>0</b>{% endif %}<small>Flagged</small></div>
+                </section>
+                {%- if names -%}
+                  <nav><ha-icon icon="mdi:account-multiple"></ha-icon>
+                  {%- for n in names %}<small>{{ n | e }}</small>{% endfor -%}
+                  </nav>
+                {%- endif -%}
+                <nav><ha-icon icon="mdi:cctv"></ha-icon>
+                {%- for c in cams | unique | sort -%}
+                  <small>{{ c | replace('_', ' ') | replace('-', ' ') | title | e }}<b>{{ cams | select('eq', c) | list | count }}</b></small>
                 {%- endfor -%}
+                </nav>
               {%- else -%}
-                No camera events today.
+                <p>No camera events today.</p>
               {%- endif -%}
 
-          # Filters
+          # ── Filters ──────────────────────────────────────────────────────
           - type: tile
             entity: select.frigate_vision_camera
             name: Camera
+            icon: mdi:cctv
             hide_state: true
             features:
               - type: select-options
@@ -83,46 +147,268 @@ views:
           - type: tile
             entity: input_select.frigate_vision_show
             name: Show
+            icon: mdi:filter-variant
             hide_state: true
             features:
               - type: select-options
             grid_options:
               columns: 6
 
-          # The history
+          # ── Event feed ───────────────────────────────────────────────────
           - type: markdown
             card_mod:
               style:
+                .: |
+                  ha-card {
+                    background: none;
+                    border: none;
+                    box-shadow: none;
+                  }
+                  ha-markdown {
+                    padding: 0 !important;
+                  }
                 ha-markdown$: |
-                  img {
-                    display: block;
-                    width: 100%;
-                    max-height: 65vh;
-                    object-fit: contain;
-                    border-radius: 12px;
+                  /* Day headings */
+                  h2 {
+                    margin: 28px 4px 10px;
+                    font-size: 13px;
+                    font-weight: 600;
+                    letter-spacing: 0.08em;
+                    text-transform: uppercase;
+                    color: var(--secondary-text-color);
+                  }
+                  h2:first-child { margin-top: 8px; }
+
+                  /* Event cards */
+                  article {
+                    margin: 0 0 14px;
+                    border-radius: 20px;
+                    overflow: hidden;
+                    background: var(--card-background-color);
+                    border: 1px solid var(--divider-color);
+                    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 6px 20px rgba(0, 0, 0, 0.06);
+                  }
+                  article:has(nav mark) {
+                    border-color: var(--warning-color);
+                    box-shadow: 0 0 0 1px var(--warning-color), 0 6px 20px rgba(0, 0, 0, 0.08);
+                  }
+                  article:has(nav mark b) {
+                    border-color: var(--error-color);
+                    box-shadow: 0 0 0 1px var(--error-color), 0 6px 20px rgba(0, 0, 0, 0.08);
+                  }
+
+                  /* GIF with camera + time overlaid */
+                  figure {
+                    position: relative;
+                    margin: 0;
                     background: #000;
                   }
-                  h2 { margin: 20px 0 4px; }
-                  h3 { margin: 12px 0 8px; }
-                  details summary { color: var(--primary-color); cursor: pointer; }
-                  details { margin: 8px 0; }
-                  details[open] {
-                    padding-left: 12px;
-                    border-left: 2px solid var(--divider-color);
+                  figure a { display: block; }
+                  figure img {
+                    display: block;
+                    width: 100%;
+                    max-height: 60vh;
+                    object-fit: contain;
+                    margin: 0;
                   }
-                  details[open] summary { margin-bottom: 8px; }
-                  h4 { margin: 12px 0 4px; }
-            content: |-
+                  figcaption {
+                    position: absolute;
+                    left: 0;
+                    right: 0;
+                    bottom: 0;
+                    display: flex;
+                    align-items: flex-end;
+                    justify-content: space-between;
+                    gap: 10px;
+                    padding: 36px 14px 10px;
+                    background: linear-gradient(to top, rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0));
+                    color: #fff;
+                    font-size: 13px;
+                    pointer-events: none;
+                  }
+                  figcaption b {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 6px;
+                    font-weight: 600;
+                  }
+                  figcaption small {
+                    white-space: nowrap;
+                    font-variant-numeric: tabular-nums;
+                    opacity: 0.9;
+                  }
+                  figcaption ha-icon { --mdc-icon-size: 16px; }
+
+                  /* Title + chips */
+                  header { padding: 14px 16px 0; }
+                  h3 {
+                    margin: 0 0 10px;
+                    font-size: 17px;
+                    font-weight: 600;
+                    line-height: 1.3;
+                  }
+                  nav {
+                    display: flex;
+                    flex-wrap: wrap;
+                    gap: 6px;
+                  }
+                  nav small, nav strong, nav mark {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 4px;
+                    padding: 4px 10px;
+                    border-radius: 999px;
+                    font-size: 12px;
+                    font-weight: 500;
+                    line-height: 1.4;
+                    background: var(--secondary-background-color);
+                    color: var(--secondary-text-color);
+                  }
+                  nav strong {
+                    background: color-mix(in srgb, var(--primary-color) 15%, transparent);
+                    color: var(--primary-color);
+                  }
+                  nav mark {
+                    background: color-mix(in srgb, var(--warning-color) 18%, transparent);
+                    color: var(--warning-color);
+                  }
+                  nav mark:has(b) {
+                    background: color-mix(in srgb, var(--error-color) 18%, transparent);
+                    color: var(--error-color);
+                  }
+                  nav mark b {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 4px;
+                    font-weight: inherit;
+                  }
+                  nav ha-icon { --mdc-icon-size: 14px; }
+
+                  /* Body text */
+                  article > p {
+                    margin: 12px 16px 0;
+                    font-size: 15px;
+                    line-height: 1.5;
+                  }
+                  article > p + p {
+                    font-size: 14px;
+                    color: var(--secondary-text-color);
+                  }
+                  article > ha-alert {
+                    display: block;
+                    margin: 12px 16px 0;
+                  }
+
+                  /* Collapsible sections */
+                  article > details {
+                    margin: 12px 16px 0;
+                    padding: 0 12px;
+                    border-radius: 12px;
+                    background: var(--secondary-background-color);
+                  }
+                  summary {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    padding: 10px 0;
+                    list-style: none;
+                    cursor: pointer;
+                    font-size: 13px;
+                    font-weight: 600;
+                    color: var(--primary-color);
+                  }
+                  summary::-webkit-details-marker { display: none; }
+                  summary::after {
+                    content: '';
+                    width: 7px;
+                    height: 7px;
+                    margin-right: 4px;
+                    border-right: 2px solid currentColor;
+                    border-bottom: 2px solid currentColor;
+                    transform: rotate(45deg);
+                    transition: transform 0.2s;
+                  }
+                  details[open] > summary::after { transform: rotate(-135deg); }
+                  details[open] { padding-bottom: 6px; }
+                  details p, details li {
+                    font-size: 14px;
+                    line-height: 1.5;
+                    color: var(--secondary-text-color);
+                  }
+                  details p { margin: 0 0 8px; }
+                  details ul { margin: 0 0 8px; padding-left: 18px; }
+                  details li + li { margin-top: 4px; }
+                  h4 {
+                    margin: 14px 0 4px;
+                    padding-top: 12px;
+                    border-top: 1px solid var(--divider-color);
+                    font-size: 13px;
+                    font-weight: 600;
+                  }
+                  summary + h4 { margin-top: 0; padding-top: 0; border-top: none; }
+
+                  /* Action buttons */
+                  footer {
+                    display: flex;
+                    flex-wrap: wrap;
+                    gap: 8px;
+                    padding: 14px 16px 16px;
+                  }
+                  footer a {
+                    flex: 1;
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 6px;
+                    min-height: 40px;
+                    padding: 0 12px;
+                    border-radius: 12px;
+                    background: var(--secondary-background-color);
+                    color: var(--primary-text-color);
+                    font-size: 13px;
+                    font-weight: 500;
+                    text-decoration: none;
+                    white-space: nowrap;
+                  }
+                  footer a:first-child {
+                    background: var(--primary-color);
+                    color: var(--text-primary-color, #fff);
+                  }
+                  footer ha-icon { --mdc-icon-size: 18px; }
+
+                  /* Empty state */
+                  section {
+                    padding: 40px 16px;
+                    border-radius: 20px;
+                    text-align: center;
+                    background: var(--card-background-color);
+                    border: 1px solid var(--divider-color);
+                    color: var(--secondary-text-color);
+                  }
+                  section ha-icon {
+                    --mdc-icon-size: 40px;
+                    display: block;
+                    margin: 0 auto 8px;
+                    opacity: 0.6;
+                  }
+            content: >-
               {#- Settings -#}
+
               {%- set limit = 25 -%}
-              {%- set time_format = '%-I:%M %p' -%}{#- '%H:%M' for a 24-hour clock -#}
-              {%- set vehicles = ['car', 'motorcycle', 'bicycle', 'bus', 'truck', 'boat',
+
+              {%- set time_format = '%-I:%M %p' -%}{#- '%H:%M' for a 24-hour
+              clock -#}
+
+              {%- set vehicles = ['car', 'motorcycle', 'bicycle', 'bus',
+              'truck', 'boat',
                    'airplane', 'train', 'license_plate'] -%}
-              {%- set animals = ['bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'bear',
+              {%- set animals = ['bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
+              'bear',
                    'deer', 'fox', 'raccoon', 'squirrel', 'rabbit', 'skunk', 'goat',
                    'kangaroo', 'elephant', 'zebra', 'giraffe', 'bark'] -%}
 
-              {#- Frigate's GenAI calls anyone it didn't recognize an "unidentified
+              {#- Frigate's GenAI calls anyone it didn't recognize an
+              "unidentified
                   person", even when they were recognized later or on another camera.
                   Use the recognized name instead, or just "person" if there isn't one. -#}
               {%- macro clean(t, names) -%}
@@ -144,12 +430,21 @@ views:
                 {{- ns.t | regex_replace('\\b' ~ adj ~ ' (?=' ~ noun ~ '\\b)', '', true) -}}
               {%- endmacro -%}
 
+
               {%- set camera = states('select.frigate_vision_camera') -%}
+
               {%- set show = states('input_select.frigate_vision_show') -%}
+
               {%- set today = now().strftime('%Y-%m-%d') -%}
-              {%- set yesterday = (now() - timedelta(days=1)).strftime('%Y-%m-%d') -%}
-              {%- set events = state_attr('sensor.frigate_vision_history', 'events') or [] -%}
+
+              {%- set yesterday = (now() -
+              timedelta(days=1)).strftime('%Y-%m-%d') -%}
+
+              {%- set events = state_attr('sensor.frigate_vision_history',
+              'events') or [] -%}
+
               {%- set ns = namespace(count=0, day='') -%}
+
 
               {%- for e in events -%}
                 {%- set cams = e.cameras | default([]) | map('replace', '_', ' ')
@@ -177,14 +472,12 @@ views:
                 {%- if camera_ok and show_ok and ns.count < limit -%}
                   {%- set ns.count = ns.count + 1 -%}
 
-                  {#- Day heading, or a divider between events on the same day -#}
+                  {#- Day heading -#}
                   {%- set day = e.start | timestamp_custom('%Y-%m-%d') -%}
                   {%- if day != ns.day -%}
                     {%- set ns.day = day -%}
                     <h2>{{ 'Today' if day == today else 'Yesterday' if day == yesterday
                            else e.start | timestamp_custom('%A, %B %-d') }}</h2>
-                  {%- else -%}
-                    <hr>
                   {%- endif -%}
 
                   {#- "Zach detected" / "Person and car detected" -#}
@@ -223,22 +516,56 @@ views:
                   {#- Each camera's own GenAI summary. Recorded for journeys an AI Task
                       summarized, or that more than one camera summarized -#}
                   {%- set sources = e.sources | default([]) -%}
+                  {%- set ai = e.ai if e.ai is defined else sources | count > 0 -%}
 
-                  <div>
-                  <h3>{{ '🚨 ' if threat >= 2 else '⚠️ ' if threat == 1 }}{{ title | e }}</h3>
-                  <img src="{{ gif | e }}" alt="{{ subject | e }}" width="100%" loading="lazy">
-                  <p><b>{{ cams | join(' → ') | e }}</b> · {{ e.start | timestamp_custom(time_format) }}
-                  {{- ' · ' ~ duration if duration }} · {{ 'Alert' if e.severity == 'alert' else 'Detection' }}
-                  {%- if e.title and names %}<br>👤 {{ names | join(', ') | e }}{% endif %}
-                  {%- if e.zones %}<br>📍 {{ e.zones | map('replace', '_', ' ') | map('title') | join(', ') | e }}{% endif -%}
-                  </p>
+                  <article>
+
+                  {#- GIF, with the camera path and time over the bottom edge -#}
+                  <figure><a href="{{ gif | e }}" target="_blank"><img src="{{ gif | e }}" alt="{{ subject | e }}" width="100%" loading="lazy"></a>
+                  <figcaption><b><ha-icon icon="mdi:cctv"></ha-icon>{{ cams | join(' → ') | e }}</b>
+                  <small>{{ e.start | timestamp_custom(time_format) }}</small></figcaption></figure>
+
+                  {#- Title and chips -#}
+                  <header><h3>{{ title | e }}</h3><nav>
+                  {%- if threat >= 2 -%}
+                    <mark><b><ha-icon icon="mdi:alert-octagon"></ha-icon>High threat</b></mark>
+                  {%- elif threat == 1 -%}
+                    <mark><ha-icon icon="mdi:alert"></ha-icon>Flagged</mark>
+                  {%- endif -%}
+                  {%- if e.severity == 'alert' -%}
+                    <strong><ha-icon icon="mdi:bell-ring"></ha-icon>Alert</strong>
+                  {%- else -%}
+                    <small><ha-icon icon="mdi:motion-sensor"></ha-icon>Detection</small>
+                  {%- endif -%}
+                  {%- if duration -%}
+                    <small><ha-icon icon="mdi:timer-outline"></ha-icon>{{ duration }}</small>
+                  {%- endif -%}
+                  {%- if e.title and names -%}
+                    {%- for n in names %}<small><ha-icon icon="mdi:account"></ha-icon>{{ n | e }}</small>{% endfor -%}
+                  {%- endif -%}
+                  {%- for z in e.zones | default([]) -%}
+                    <small><ha-icon icon="mdi:map-marker"></ha-icon>{{ z | replace('_', ' ') | title | e }}</small>
+                  {%- endfor -%}
+                  </nav></header>
+
                   {%- if summary %}<p>{{ summary | e }}</p>{% endif -%}
-                  {%- if scene %}<p>{{ scene | e | replace('\n', '<br>') }}</p>{% endif -%}
+                  {%- if ai -%}
+                    {#- Written by the AI Task: its description is the main text, and
+                        the cameras' observations are with their summaries below -#}
+                    {%- if scene %}<p>{{ scene | e | replace('\n', '<br>') }}</p>{% endif -%}
+                  {%- elif scene or observations -%}
+                    <details{{ ' open' if ns.count == 1 }}><summary>Details</summary>
+                    {%- if scene %}<p>{{ scene | e | replace('\n', '<br>') }}</p>{% endif -%}
+                    {%- if observations -%}
+                      <ul>{% for o in observations %}<li>{{ o | e }}</li>{% endfor %}</ul>
+                    {%- endif -%}
+                    </details>
+                  {%- endif -%}
                   {%- for c in concerns -%}
                     <ha-alert alert-type="warning">{{ c | e }}</ha-alert>
                   {%- endfor -%}
                   {%- if sources -%}
-                    <details><summary>Frigate GenAI summaries ({{ sources | count }})</summary>
+                    <details><summary>Camera summaries ({{ sources | count }})</summary>
                     {%- for s in sources -%}
                       {%- set t = s.threat | default(0) | int(0) -%}
                       <h4>{{ '🚨 ' if t >= 2 else '⚠️ ' if t == 1 }}{{ s.camera | replace('_', ' ') | replace('-', ' ') | title | e }}
@@ -253,25 +580,29 @@ views:
                       {%- endif -%}
                     {%- endfor -%}
                     </details>
-                  {%- elif observations -%}
-                    {#- Older records only kept the cameras' observations -#}
-                    <details><summary>Frigate GenAI observations ({{ observations | count }})</summary>
-                    <ul>{% for o in observations %}<li>{{ o | e }}</li>{% endfor %}</ul>
-                    </details>
                   {%- endif -%}
-                  {%- set links = [] -%}
-                  {%- if e.clip %}{% set links = links + ['<a href="' ~ e.clip | e ~ '" target="_blank">▶️ Clip</a>'] %}{% endif -%}
-                  {%- set links = links + ['<a href="' ~ gif | e ~ '" target="_blank">🔍 Full size</a>'] -%}
-                  {%- if e.frigate %}{% set links = links + ['<a href="' ~ e.frigate | e ~ '" target="_blank">Open in Frigate</a>'] %}{% endif -%}
-                  <p>{{ links | join(' · ') }}</p>
-                  </div>
+
+                  {#- Action buttons; the first one is filled -#}
+                  <footer>
+                  {%- if e.clip -%}
+                    <a href="{{ e.clip | e }}" target="_blank"><ha-icon icon="mdi:play"></ha-icon>Clip</a>
+                  {%- endif -%}
+                  <a href="{{ gif | e }}" target="_blank"><ha-icon icon="mdi:arrow-expand"></ha-icon>Full size</a>
+                  {%- if e.frigate -%}
+                    <a href="{{ e.frigate | e }}" target="_blank"><ha-icon icon="mdi:open-in-new"></ha-icon>Frigate</a>
+                  {%- endif -%}
+                  </footer>
+                  </article>
                 {%- endif -%}
               {%- endfor -%}
 
+
               {%- if ns.count == 0 -%}
+                <section><ha-icon icon="mdi:cctv-off"></ha-icon>
                 {%- if events -%}
                   Nothing matches these filters.
                 {%- else -%}
                   No events yet. Reviews show up here once their GIF is ready.
                 {%- endif -%}
+                </section>
               {%- endif -%}
