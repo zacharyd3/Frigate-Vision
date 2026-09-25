@@ -23,7 +23,10 @@ Commands (arguments are key=value pairs):
         Each <seen> is when the camera picked up an object again during
         its review (the start time of each of the review's detections).
         Starts rendering in the background (shell_command stops anything
-        that runs longer than 60 seconds) and prints {"status": "started"}.
+        that runs longer than 60 seconds) and prints
+        {"status": "started", "genai": "<camera>@<severity> ..."}, where
+        "genai" lists the cameras and review severities Frigate writes GenAI
+        summaries for (left out if Frigate's config can't be read).
 
     status job=<id>
         Prints {"status": "running" | "done" | "failed", "url": ..., "error": ...}
@@ -40,9 +43,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve()
@@ -65,6 +70,11 @@ DEFAULTS = {
     "retries": 3,
     "keep_hours": 48,
 }
+
+# Pieces of the same camera less than this far apart come from one download
+MERGE_GAP = 30.0
+# Recordings downloaded at the same time
+PARALLEL_DOWNLOADS = 3
 
 
 def fail_usage(message):
@@ -195,13 +205,31 @@ def media_info(path):
     return duration, width, height
 
 
-def download_piece(base_url, piece, dest, retries, log):
-    """Download a piece's recording and return media_info() for it, or None.
+def plan_downloads(pieces):
+    """Group the timeline's pieces into the clips to download.
+
+    A camera's pieces less than MERGE_GAP apart share one clip, so a journey
+    that goes back and forth between two cameras downloads one clip per
+    camera instead of one per cut."""
+    clips = []
+    for piece in pieces:
+        clip = next((c for c in reversed(clips) if c["camera"] == piece["camera"]), None)
+        if clip and piece["start"] - clip["end"] <= MERGE_GAP:
+            clip["end"] = max(clip["end"], piece["end"])
+            clip["pieces"].append(piece)
+        else:
+            clips.append({"camera": piece["camera"], "start": piece["start"],
+                          "end": piece["end"], "pieces": [piece]})
+    return clips
+
+
+def download_clip(base_url, clip, dest, retries, log):
+    """Download a clip's recording and return media_info() for it, or None.
     Frigate only has a recording once its segment is finished, so a clip that
     comes back missing or short is fetched again a few times."""
-    url = (f"{base_url}/api/{piece['camera']}/start/{piece['start']:.3f}"
-           f"/end/{piece['end']:.3f}/clip.mp4")
-    wanted = piece["end"] - piece["start"]
+    url = (f"{base_url}/api/{clip['camera']}/start/{clip['start']:.3f}"
+           f"/end/{clip['end']:.3f}/clip.mp4")
+    wanted = clip["end"] - clip["start"]
     info = (None, 0, 0)
     for attempt in range(retries + 1):
         if attempt:
@@ -210,14 +238,14 @@ def download_piece(base_url, piece, dest, retries, log):
             with urllib.request.urlopen(url, timeout=120) as resp, open(dest, "wb") as f:
                 shutil.copyfileobj(resp, f)
         except urllib.error.HTTPError as err:
-            log(f"{piece['camera']}: download failed ({err}), attempt {attempt + 1}")
+            log(f"{clip['camera']}: download failed ({err}), attempt {attempt + 1}")
             continue
         except (urllib.error.URLError, OSError) as err:
             # Frigate can't be reached at all, so retrying won't help
-            log(f"{piece['camera']}: download failed ({err}), not retrying")
+            log(f"{clip['camera']}: download failed ({err}), not retrying")
             break
         info = media_info(dest)
-        log(f"{piece['camera']}: got {info[0]}s of {wanted:.1f}s at "
+        log(f"{clip['camera']}: got {info[0]}s of {wanted:.1f}s at "
             f"{info[1]}x{info[2]}, attempt {attempt + 1}")
         if info[0] is None or info[0] >= wanted - 1.5:
             return info
@@ -336,8 +364,10 @@ def worker(job):
     spec_path, status_path, log_path = job_paths(job)
     opts = json.loads(spec_path.read_text())
 
+    log_lock = threading.Lock()
+
     def log(message):
-        with open(log_path, "a") as f:
+        with log_lock, open(log_path, "a") as f:
             f.write(f"{time.strftime('%H:%M:%S')} {message}\n")
 
     try:
@@ -352,27 +382,44 @@ def worker(job):
         if not pieces:
             raise RuntimeError("nothing to render")
 
+        clips = plan_downloads(pieces)
         with tempfile.TemporaryDirectory(prefix="frigate_vision_") as tmp:
+            for i, clip in enumerate(clips):
+                clip["path"] = Path(tmp) / f"clip{i}.mp4"
+            with ThreadPoolExecutor(max_workers=PARALLEL_DOWNLOADS) as pool:
+                infos = list(pool.map(
+                    lambda c: download_clip(opts["url"], c, c["path"], int(opts["retries"]), log),
+                    clips))
+            for clip, info in zip(clips, infos):
+                clip["info"] = info
+
             inputs = []
-            for i, piece in enumerate(pieces):
-                dest = Path(tmp) / f"piece{i}.mp4"
-                info = download_piece(opts["url"], piece, dest, int(opts["retries"]), log)
-                if info is None:
+            for piece in pieces:
+                clip = next(c for c in clips if any(piece is p for p in c["pieces"]))
+                if clip["info"] is None:
                     continue
-                duration, width, height = info
-                wanted = piece["end"] - piece["start"]
+                duration, width, height = clip["info"]
+                wanted = clip["end"] - clip["start"]
                 # Frigate starts a clip on the keyframe before the requested
-                # time, so trim any extra lead-in off the front
-                offset = max(0.0, duration - wanted) if duration else 0.0
-                inputs.append({"path": dest, "camera": piece["camera"],
-                               "offset": offset, "length": wanted,
+                # time, so skip any extra lead-in at the front
+                lead = max(0.0, duration - wanted) if duration else 0.0
+                offset = lead + piece["start"] - clip["start"]
+                length = piece["end"] - piece["start"]
+                if duration:
+                    # A clip that came back short is missing its end
+                    length = min(length, duration - offset)
+                if length < 0.25:
+                    continue
+                inputs.append({"path": clip["path"], "camera": piece["camera"],
+                               "offset": offset, "length": length,
                                "width": width, "height": height})
             if not inputs:
                 raise RuntimeError("no recordings could be downloaded")
 
             total = sum(i["length"] for i in inputs)
             opts["speed"] = max(float(opts["speed"]), total / max(float(opts["max_length"]), 1))
-            log(f"rendering {len(inputs)} piece(s), {total:.1f}s at {opts['speed']:.2f}x")
+            log(f"rendering {len(inputs)} piece(s) from {len(clips)} clip(s), "
+                f"{total:.1f}s at {opts['speed']:.2f}x")
 
             OUT_DIR.mkdir(parents=True, exist_ok=True)
             tmp_gif = Path(tmp) / "out.gif"
@@ -394,6 +441,30 @@ def worker(job):
 
 
 # ── Commands ────────────────────────────────────────────────────────────────
+
+
+def genai_reviews(url):
+    """The cameras and review severities Frigate writes GenAI summaries for,
+    as "<camera>@alert <camera>@detection ...", or None if Frigate's config
+    can't be read. Frigate 0.17+ sets this per camera in review -> genai:
+    off unless enabled, and then for alerts but not detections by default."""
+    try:
+        with urllib.request.urlopen(f"{url}/api/config", timeout=10) as resp:
+            config = json.load(resp)
+        cameras = config.get("cameras") or {}
+        found = []
+        for name, camera in cameras.items():
+            genai = ((camera or {}).get("review") or {}).get("genai") or {}
+            if not NAME_RE.match(name) or not genai.get("enabled"):
+                continue
+            if genai.get("alerts", True):
+                found.append(f"{name}@alert")
+            if genai.get("detections", False):
+                found.append(f"{name}@detection")
+        return " ".join(found)
+    except (urllib.error.URLError, OSError, ValueError, AttributeError):
+        return None
+
 
 
 def cmd_render(opts):
@@ -443,6 +514,8 @@ def cmd_render(opts):
     if spec["background"] not in ("blur", "black"):
         fail_usage("invalid background")
 
+    genai = genai_reviews(url)
+
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
     spec_path.write_text(json.dumps(spec))
     write_status(status_path, status="running")
@@ -453,7 +526,10 @@ def cmd_render(opts):
             [sys.executable, str(SCRIPT), "worker", job],
             stdin=devnull, stdout=log, stderr=log, start_new_session=True,
         )
-    print(json.dumps({"status": "started"}))
+    started = {"status": "started"}
+    if genai is not None:
+        started["genai"] = genai
+    print(json.dumps(started))
 
 
 def cmd_status(opts):
