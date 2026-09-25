@@ -223,7 +223,6 @@ views:
                   {#- Each camera's own GenAI summary. Recorded for journeys an AI Task
                       summarized, or that more than one camera summarized -#}
                   {%- set sources = e.sources | default([]) -%}
-                  {%- set ai = e.ai if e.ai is defined else sources | count > 0 -%}
 
                   <div>
                   <h3>{{ '🚨 ' if threat >= 2 else '⚠️ ' if threat == 1 }}{{ title | e }}</h3>
@@ -234,18 +233,7 @@ views:
                   {%- if e.zones %}<br>📍 {{ e.zones | map('replace', '_', ' ') | map('title') | join(', ') | e }}{% endif -%}
                   </p>
                   {%- if summary %}<p>{{ summary | e }}</p>{% endif -%}
-                  {%- if ai -%}
-                    {#- Written by the AI Task: its description is the main text, and
-                        the cameras' observations are with their summaries below -#}
-                    {%- if scene %}<p>{{ scene | e | replace('\n', '<br>') }}</p>{% endif -%}
-                  {%- elif scene or observations -%}
-                    <details{{ ' open' if ns.count == 1 }}><summary>Details</summary>
-                    {%- if scene %}<p>{{ scene | e | replace('\n', '<br>') }}</p>{% endif -%}
-                    {%- if observations -%}
-                      <ul>{% for o in observations %}<li>{{ o | e }}</li>{% endfor %}</ul>
-                    {%- endif -%}
-                    </details>
-                  {%- endif -%}
+                  {%- if scene %}<p>{{ scene | e | replace('\n', '<br>') }}</p>{% endif -%}
                   {%- for c in concerns -%}
                     <ha-alert alert-type="warning">{{ c | e }}</ha-alert>
                   {%- endfor -%}
@@ -264,6 +252,11 @@ views:
                         <ul>{% for o in items %}<li>{{ clean(o, names) | e }}</li>{% endfor %}</ul>
                       {%- endif -%}
                     {%- endfor -%}
+                    </details>
+                  {%- elif observations -%}
+                    {#- Older records only kept the cameras' observations -#}
+                    <details><summary>Frigate GenAI observations ({{ observations | count }})</summary>
+                    <ul>{% for o in observations %}<li>{{ o | e }}</li>{% endfor %}</ul>
                     </details>
                   {%- endif -%}
                   {%- set links = [] -%}
