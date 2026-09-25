@@ -76,24 +76,40 @@ blueprint:
         labels:
           name: Labels
           description: >
-            Only follow these objects. Leave empty to follow everything. A
-            journey follows one kind of object: the first of these found in
-            the review that started it.
-          default: []
+            Objects to follow. Pick at least one. A journey follows one kind of
+            object: if the review that starts it has more than one of these,
+            it follows the one highest in this list (so a person getting out
+            of a car is followed as a person).
           selector:
             select:
               multiple: true
-              custom_value: true
+              mode: list
               sort: false
               options:
-                - person
-                - car
-                - dog
-                - cat
-                - bird
-                - package
-                - bicycle
-                - motorcycle
+                - label: Person
+                  value: person
+                - label: Car
+                  value: car
+                - label: Truck
+                  value: truck
+                - label: Motorcycle
+                  value: motorcycle
+                - label: Bicycle
+                  value: bicycle
+                - label: Package
+                  value: package
+                - label: Dog
+                  value: dog
+                - label: Cat
+                  value: cat
+                - label: Bird
+                  value: bird
+                - label: Deer
+                  value: deer
+                - label: Horse
+                  value: horse
+                - label: Bear
+                  value: bear
 
         link_detections:
           name: Link Detections
@@ -190,9 +206,11 @@ blueprint:
           description: >
             How long after the journey ends to wait for Frigate's GenAI
             summaries before sending the notification (when the notification
-            or the history uses them). Frigate often only summarises alerts,
-            so a journey with detections can wait this long. Lower it if
-            notifications come too late.
+            or the history uses them). Only the reviews Frigate summarises are
+            waited for (read from Frigate's config through the Frigate URL
+            below, or alerts only if that's blank), so without GenAI in
+            Frigate there's no wait. The notification goes as soon as they are
+            all in.
           default: 90
           selector:
             number:
@@ -541,7 +559,13 @@ variables:
 
   watched_cameras: >
     {{ input_cameras | map('replace', 'camera.', '') | list }}
-  labels: "{{ input_labels | map('lower') | list }}"
+  # The Labels checklist in its own order, which decides what a journey
+  # follows when a review has more than one of them. Labels saved from
+  # before it was a checklist go last.
+  label_order: [person, car, truck, motorcycle, bicycle, package, dog, cat, bird, deer, horse, bear]
+  labels: >
+    {% set picked = input_labels | map('lower') | list %}
+    {{ label_order | select('in', picked) | list + picked | reject('in', label_order) | list }}
 
   should_start: >
     {% macro matches(r) -%}
@@ -550,7 +574,7 @@ variables:
             | map('replace', '-verified', '') | map('lower') | list -%}
       {%- set cam_ok = (r.camera | default('') | lower | replace('-', '_')) in watched_cameras -%}
       {%- set sev_ok = r.severity | default('') in input_severity -%}
-      {%- set label_ok = found | count > 0 and (not labels or found | select('in', labels) | list | count > 0) -%}
+      {%- set label_ok = found | select('in', labels) | list | count > 0 -%}
       {{- cam_ok and sev_ok and label_ok -}}
     {%- endmacro %}
     {% set p = trigger.payload_json | default({}) %}
@@ -569,6 +593,9 @@ variables:
        + (input_cooldown.seconds | default(0)) }}
 
 conditions:
+  - alias: At least one label is selected
+    condition: template
+    value_template: "{{ labels | count > 0 }}"
   - condition: template
     value_template: "{{ should_start }}"
   - alias: Cooldown since the last notification
@@ -672,12 +699,13 @@ actions:
   # ── New journey ────────────────────────────────────────────────────────────
   - variables:
       journey_id: "{{ review.id }}"
-      # The kind of object this journey follows
+      # The kind of object this journey follows: the first of the selected
+      # labels found in the review
       label: >
         {% set d = review.data | default({}) %}
         {% set found = (d.objects | default([]) + d.audio | default([]))
              | map('replace', '-verified', '') | map('lower') | list %}
-        {{ (found | select('in', labels) | first) if labels else found | first }}
+        {{ labels | select('in', found) | first }}
       members: "{{ [review] }}"
       started_at: "{{ now().timestamp() }}"
       last_end_at: "{{ now().timestamp() }}"
@@ -716,6 +744,12 @@ actions:
       gif_url: ""
       # GenAI summaries of the journey's reviews: [{id, start, threat, meta}]
       summaries: []
+      # Which cameras and severities Frigate summarises ("<camera>@alert"),
+      # read from Frigate's config by the script, and the ids of the reviews
+      # whose summaries the notification waits for
+      genai_known: false
+      genai_reviews: []
+      genai_expected: []
       hold_until: 0
       then_stage: ""
       ended_at: 0
@@ -865,8 +899,10 @@ actions:
                         seconds: "{{ [hold_until - now().timestamp(), 0] | max | round(1) }}"
                 - variables:
                     stage: >
+                      {% set missing = genai_expected
+                           | reject('in', summaries | map(attribute='id') | list) | list %}
                       {{ then_stage if now().timestamp() >= hold_until - 0.05
-                         or (then_stage == 'done' and summaries | count >= members | count)
+                         or (then_stage == 'done' and not missing)
                          else 'hold' }}
 
             # Journey over: wait for Frigate to save the recordings, then build
@@ -921,6 +957,11 @@ actions:
                       {{ render_response.stdout | default('')
                          | regex_findall('"error": "([^"]*)"') | first
                          | default(render_response.stderr | default('the shell_command did not run', true)) }}
+                    genai_known: >
+                      {{ render_response.stdout | default('') | regex_findall('"genai": "') | count > 0 }}
+                    genai_reviews: >
+                      {{ (render_response.stdout | default('')
+                          | regex_findall('"genai": "([^"]*)"') | first | default('')).split() }}
                     render_deadline: "{{ now().timestamp() + input_render_timeout }}"
                     hold_until: "{{ now().timestamp() + 3 }}"
                     then_stage: poll
@@ -978,16 +1019,27 @@ actions:
                           {{ render_url if render_status == 'done' and render_url else gif_url }}
                         stage: summary
 
-            # GIF ready: wait for the GenAI summaries of any reviews that
-            # don't have one yet
+            # GIF ready: wait for the GenAI summaries still to come. Only the
+            # reviews Frigate summarises are waited for: per its config if
+            # the script could read it, otherwise alerts (Frigate's default).
             - conditions: "{{ stage == 'summary' }}"
               sequence:
                 - variables:
+                    genai_expected: >
+                      {% set ns = namespace(ids=[]) %}
+                      {% for m in members %}
+                        {% set summarised = ((m.camera ~ '@' ~ m.severity) in genai_reviews)
+                             if genai_known else m.severity == 'alert' %}
+                        {% if summarised %}{% set ns.ids = ns.ids + [m.id] %}{% endif %}
+                      {% endfor %}
+                      {{ ns.ids if collect_genai else [] }}
                     hold_until: "{{ ended_at + input_genai_timeout }}"
                     then_stage: done
                     stage: >
-                      {{ 'hold' if collect_genai and summaries | count < members | count
-                         and now().timestamp() < ended_at + input_genai_timeout else 'done' }}
+                      {% set missing = genai_expected
+                           | reject('in', summaries | map(attribute='id') | list) | list %}
+                      {{ 'hold' if missing and now().timestamp() < ended_at + input_genai_timeout
+                         else 'done' }}
 
           default:
             - variables:
