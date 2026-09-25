@@ -259,8 +259,23 @@ views:
                     <ul>{% for o in observations %}<li>{{ o | e }}</li>{% endfor %}</ul>
                     </details>
                   {%- endif -%}
+                  {#- A clip per camera for journeys; older records have just the first -#}
+                  {%- set clips = e.clips | default([]) -%}
+                  {%- if clips | count > 1 -%}
+                    {%- set clip_links = namespace(list=[]) -%}
+                    {%- for c in clips -%}
+                      {%- set name = c.camera | replace('_', ' ') | replace('-', ' ') | title -%}
+                      {%- if clips | selectattr('camera', 'eq', c.camera) | list | count > 1 -%}
+                        {%- set name = name ~ ' ' ~ c.start | timestamp_custom(time_format) -%}
+                      {%- endif -%}
+                      {%- set clip_links.list = clip_links.list
+                           + ['<a href="' ~ c.url | e ~ '" target="_blank">' ~ name | e ~ '</a>'] -%}
+                    {%- endfor -%}
+                    <p>▶️ Clips ({{ clips | count }}): {{ clip_links.list | join(' · ') }}</p>
+                  {%- endif -%}
+                  {%- set clip = clips[0].url if clips | count == 1 else e.clip if not clips else '' -%}
                   {%- set links = [] -%}
-                  {%- if e.clip %}{% set links = links + ['<a href="' ~ e.clip | e ~ '" target="_blank">▶️ Clip</a>'] %}{% endif -%}
+                  {%- if clip %}{% set links = links + ['<a href="' ~ clip | e ~ '" target="_blank">▶️ Clip</a>'] %}{% endif -%}
                   {%- set links = links + ['<a href="' ~ gif | e ~ '" target="_blank">🔍 Full size</a>'] -%}
                   {%- if e.frigate %}{% set links = links + ['<a href="' ~ e.frigate | e ~ '" target="_blank">Open in Frigate</a>'] %}{% endif -%}
                   <p>{{ links | join(' · ') }}</p>

@@ -109,7 +109,7 @@ Frigate only makes GIFs of one review on one camera, so the journey GIF is built
 
 ### 📱 History Dashboard
 
-A dashboard of recent camera events, made for the Home Assistant app on a phone. Each event shows its GIF, what was detected (and who), the cameras, time, length and zones, and Frigate's GenAI title, short summary and full details with any concerns flagged. The GenAI summary is recorded **even if your notifications don't use it**. Filter by camera or by *Alerts*, *People*, *Vehicles*, *Animals* or *Potential threats*. A line at the top sums up today: how many events and alerts, who was seen, and which cameras were busy.
+A dashboard of recent camera events, made for the Home Assistant app on a phone. Each event shows its GIF, what was detected (and who), the cameras, time, length and zones, and Frigate's GenAI title, short summary and full details with any concerns flagged, plus links to its clips (one per camera for a multi-camera journey). The GenAI summary is recorded **even if your notifications don't use it**. Filter by camera or by *Alerts*, *People*, *Vehicles*, *Animals* or *Potential threats*. A line at the top sums up today: how many events and alerts, who was seen, and which cameras were busy.
 
 Both blueprints record to it. It keeps the last 40 events and survives restarts.
 

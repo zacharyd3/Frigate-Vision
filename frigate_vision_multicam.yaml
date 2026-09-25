@@ -1380,6 +1380,19 @@ actions:
           gif_fallback: "{{ frigate_gif_url }}"
           thumbnail: "{{ thumbnail_url | trim }}"
           clip: "{{ clip_url | trim }}"
+          # One clip per camera review in the journey, in order
+          clips: >
+            {% set ns = namespace(list=[]) %}
+            {% for m in members | sort(attribute='start_time') %}
+              {% set event_id = (m.data | default({})).detections | default([]) | first | default('') %}
+              {% if event_id %}
+                {% set ns.list = ns.list + [{
+                     'camera': m.camera,
+                     'start': m.start_time,
+                     'url': base_url ~ '/api/frigate/notifications/' ~ event_id ~ '/' ~ m.camera ~ '/clip.mp4'}] %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.list }}
           frigate: "{{ frigate_review_url | trim }}"
           title: "{{ summary.title | default('', true) }}"
           summary: "{{ summary.shortSummary | default('', true) }}"
