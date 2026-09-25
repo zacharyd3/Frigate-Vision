@@ -98,7 +98,7 @@ Frigate only makes GIFs of one review on one camera, so the journey GIF is built
 * **Timing:** a journey ends once everything has ended and the *Link Gap* has passed. Frigate's GIF follows about 10s later, and the journey GIF after the *Recording Delay* plus the time to build it. On a Raspberry Pi with 4K cameras, building can take a minute or more. Lower *Size*/*Frames per Second*, or raise *GIF Timeout*, if it times out.
 * **GIF size:** iOS only shows images up to 10 MB in notifications. The defaults (640px, 8 fps, 2x speed, 20s max) stay well under that. *Blurred* backgrounds make bigger files than *Black*.
 * **Where the GIFs live:** in `/config/www/frigate_vision/`. They are deleted after 48 hours, or after the notification timeout if that's longer. Like everything under `/local/`, they can be opened without logging in by anyone who can reach your Home Assistant and knows the file name. The names include a random part, so they can't be guessed.
-* **Troubleshooting:** each GIF has a log in `/config/frigate_vision/jobs/`, named in the Home Assistant log warning.
+* **Troubleshooting:** each GIF has a log in `/config/frigate_vision/jobs/`, named in the Home Assistant log warning. If the warning says it can't reach Frigate, check the **Frigate URL (from Home Assistant)** input: it must be a full address such as `http://192.168.1.50:5000`.
 * **Not in this version (yet):** zone filters, the *Summary* button with GenAI's full description, and pulling in a camera's review from *before* the journey started (e.g. a car on the street "detection" before the person at the door "alert"). Add *Detection* to *Review Severity* if you want those to start a journey.
 
 ---

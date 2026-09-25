@@ -196,9 +196,13 @@ def download_piece(base_url, piece, dest, retries, log):
         try:
             with urllib.request.urlopen(url, timeout=120) as resp, open(dest, "wb") as f:
                 shutil.copyfileobj(resp, f)
-        except (urllib.error.URLError, OSError) as err:
+        except urllib.error.HTTPError as err:
             log(f"{piece['camera']}: download failed ({err}), attempt {attempt + 1}")
             continue
+        except (urllib.error.URLError, OSError) as err:
+            # Frigate can't be reached at all, so retrying won't help
+            log(f"{piece['camera']}: download failed ({err}), not retrying")
+            break
         info = media_info(dest)
         log(f"{piece['camera']}: got {info[0]}s of {wanted:.1f}s at "
             f"{info[1]}x{info[2]}, attempt {attempt + 1}")
@@ -400,6 +404,15 @@ def cmd_render(opts):
         reviews.append({"camera": parts[0], "start": start, "end": end})
     if not reviews:
         fail_usage("no reviews given")
+
+    # Check Frigate answers before starting, so a wrong URL fails straight
+    # away with a clear error instead of every download hanging until the
+    # blueprint gives up
+    try:
+        with urllib.request.urlopen(f"{url}/api/version", timeout=10):
+            pass
+    except (urllib.error.URLError, OSError, ValueError) as err:
+        fail_usage(f"can't reach Frigate at {url} ({getattr(err, 'reason', err)})")
 
     spec = {"url": url, "reviews": reviews}
     for key, default in DEFAULTS.items():
