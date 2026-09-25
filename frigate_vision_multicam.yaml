@@ -1147,7 +1147,7 @@ actions:
 
   - if:
       - condition: template
-        value_template: "{{ input_history and gif_url }}"
+        value_template: "{{ input_history and gif_url | length > 0 }}"
     then:
       - event: frigate_vision_history
         event_data:
