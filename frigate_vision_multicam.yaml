@@ -1391,11 +1391,13 @@ actions:
             {% set o = summary.other_concerns | default([], true) %}
             {{ [o] if o is string else o | list }}
           threat: "{{ summary.potential_threat_level | default(0, true) | int(0) }}"
-          # The cameras' own GenAI summaries the AI Task worked from, so the
-          # dashboard can show where its summary came from
+          # Whether the AI Task wrote the title and summary above
+          ai: "{{ ai_combined | count > 0 }}"
+          # Each camera's own GenAI summary (when the AI Task worked from them,
+          # or there was more than one), for the dashboard's collapsed section
           sources: >
             {% set ns = namespace(list=[]) %}
-            {% if ai_combined %}
+            {% if ai_combined or summaries | count > 1 %}
               {% for s in summaries | sort(attribute='start') %}
                 {% set m = members | selectattr('id', 'eq', s.id) | first | default({}) %}
                 {% set o = s.meta.observations | default([], true) %}

@@ -105,12 +105,12 @@ views:
                   h2 { margin: 20px 0 4px; }
                   h3 { margin: 12px 0 8px; }
                   details summary { color: var(--primary-color); cursor: pointer; }
-                  details[open] summary { margin-bottom: 8px; }
-                  details details {
-                    margin-top: 8px;
+                  details { margin: 8px 0; }
+                  details[open] {
                     padding-left: 12px;
                     border-left: 2px solid var(--divider-color);
                   }
+                  details[open] summary { margin-bottom: 8px; }
                   h4 { margin: 12px 0 4px; }
             content: |-
               {#- Settings -#}
@@ -220,8 +220,10 @@ views:
                   {%- endfor -%}
                   {%- set observations = lists.observations -%}
                   {%- set concerns = lists.concerns -%}
-                  {#- The cameras' own summaries, when an AI Task summarized them -#}
+                  {#- Each camera's own GenAI summary. Recorded for journeys an AI Task
+                      summarized, or that more than one camera summarized -#}
                   {%- set sources = e.sources | default([]) -%}
+                  {%- set ai = e.ai if e.ai is defined else sources | count > 0 -%}
 
                   <div>
                   <h3>{{ '🚨 ' if threat >= 2 else '⚠️ ' if threat == 1 }}{{ title | e }}</h3>
@@ -232,34 +234,38 @@ views:
                   {%- if e.zones %}<br>📍 {{ e.zones | map('replace', '_', ' ') | map('title') | join(', ') | e }}{% endif -%}
                   </p>
                   {%- if summary %}<p>{{ summary | e }}</p>{% endif -%}
-                  {%- if scene or observations or sources -%}
-                    <details{{ ' open' if ns.count == 1 or sources }}><summary>Details</summary>
+                  {%- if ai -%}
+                    {#- Written by the AI Task: its description is the main text, and
+                        the cameras' observations are with their summaries below -#}
+                    {%- if scene %}<p>{{ scene | e | replace('\n', '<br>') }}</p>{% endif -%}
+                  {%- elif scene or observations -%}
+                    <details{{ ' open' if ns.count == 1 }}><summary>Details</summary>
                     {%- if scene %}<p>{{ scene | e | replace('\n', '<br>') }}</p>{% endif -%}
                     {%- if observations -%}
                       <ul>{% for o in observations %}<li>{{ o | e }}</li>{% endfor %}</ul>
-                    {%- endif -%}
-                    {%- if sources -%}
-                      <details><summary>Camera summaries ({{ sources | count }})</summary>
-                      {%- for s in sources -%}
-                        {%- set t = s.threat | default(0) | int(0) -%}
-                        <h4>{{ '🚨 ' if t >= 2 else '⚠️ ' if t == 1 }}{{ s.camera | replace('_', ' ') | replace('-', ' ') | title | e }}
-                          {{- ' · ' ~ s.start | timestamp_custom(time_format) }}</h4>
-                        {%- if s.title %}<p><b>{{ s.title | e }}</b></p>{% endif -%}
-                        {%- if s.summary %}<p>{{ s.summary | e }}</p>{% endif -%}
-                        {%- if s.scene %}<p>{{ s.scene | e | replace('\n', '<br>') }}</p>{% endif -%}
-                        {%- set items = s.observations | default([])
-                             + s.concerns | default([]) | map('regex_replace', '^', '⚠️ ') | list -%}
-                        {%- if items -%}
-                          <ul>{% for o in items %}<li>{{ o | e }}</li>{% endfor %}</ul>
-                        {%- endif -%}
-                      {%- endfor -%}
-                      </details>
                     {%- endif -%}
                     </details>
                   {%- endif -%}
                   {%- for c in concerns -%}
                     <ha-alert alert-type="warning">{{ c | e }}</ha-alert>
                   {%- endfor -%}
+                  {%- if sources -%}
+                    <details><summary>Frigate GenAI summaries ({{ sources | count }})</summary>
+                    {%- for s in sources -%}
+                      {%- set t = s.threat | default(0) | int(0) -%}
+                      <h4>{{ '🚨 ' if t >= 2 else '⚠️ ' if t == 1 }}{{ s.camera | replace('_', ' ') | replace('-', ' ') | title | e }}
+                        {{- ' · ' ~ s.start | timestamp_custom(time_format) }}</h4>
+                      {%- if s.title %}<p><b>{{ clean(s.title, names) | e }}</b></p>{% endif -%}
+                      {%- if s.summary %}<p>{{ clean(s.summary, names) | e }}</p>{% endif -%}
+                      {%- if s.scene %}<p>{{ clean(s.scene, names) | e | replace('\n', '<br>') }}</p>{% endif -%}
+                      {%- set items = s.observations | default([])
+                           + s.concerns | default([]) | map('regex_replace', '^', '⚠️ ') | list -%}
+                      {%- if items -%}
+                        <ul>{% for o in items %}<li>{{ clean(o, names) | e }}</li>{% endfor %}</ul>
+                      {%- endif -%}
+                    {%- endfor -%}
+                    </details>
+                  {%- endif -%}
                   {%- set links = [] -%}
                   {%- if e.clip %}{% set links = links + ['<a href="' ~ e.clip | e ~ '" target="_blank">▶️ Clip</a>'] %}{% endif -%}
                   {%- set links = links + ['<a href="' ~ gif | e ~ '" target="_blank">🔍 Full size</a>'] -%}
