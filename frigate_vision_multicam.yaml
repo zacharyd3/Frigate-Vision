@@ -1383,3 +1383,24 @@ actions:
             {% set o = summary.other_concerns | default([], true) %}
             {{ [o] if o is string else o | list }}
           threat: "{{ summary.potential_threat_level | default(0, true) | int(0) }}"
+          # The cameras' own GenAI summaries the AI Task combined, so the
+          # dashboard can show where the combined summary came from
+          sources: >
+            {% set ns = namespace(list=[]) %}
+            {% if ai_combined %}
+              {% for s in summaries | sort(attribute='start') %}
+                {% set m = members | selectattr('id', 'eq', s.id) | first | default({}) %}
+                {% set o = s.meta.observations | default([], true) %}
+                {% set c = s.meta.other_concerns | default([], true) %}
+                {% set ns.list = ns.list + [{
+                     'camera': m.camera | default(''),
+                     'start': s.start,
+                     'title': s.meta.title | default('', true) | string,
+                     'summary': s.meta.shortSummary | default('', true) | string,
+                     'scene': s.meta.scene | default('', true) | string,
+                     'observations': [o] if o is string else o | list,
+                     'concerns': [c] if c is string else c | list,
+                     'threat': s.threat }] %}
+              {% endfor %}
+            {% endif %}
+            {{ ns.list }}
