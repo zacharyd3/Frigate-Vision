@@ -370,9 +370,10 @@ blueprint:
           description: >
             "What was detected" e.g. "Zach detected". "Cameras" e.g.
             "Front Door Cam → Back Door Cam". "Advanced" uses Frigate's GenAI
-            title (Frigate 0.17+ with review -> genai enabled), with ⚠️/🚨
-            if Frigate rates it as a potential threat, or what was detected
-            if no summary arrived in time. "None" sends no title.
+            title (Frigate 0.17+ with review -> genai enabled), or the AI's
+            if "Summarize with AI" below is set, with ⚠️/🚨 if Frigate rates
+            it as a potential threat, or what was detected if no summary
+            arrived in time. "None" sends no title.
           default: subject
           selector:
             select:
@@ -392,14 +393,15 @@ blueprint:
             "Cameras" lists the cameras in the order the object reached them,
             with the journey length, e.g. "Front Door Cam → Back Door Cam
             (0:05)". "What was detected" e.g. "Zach was detected".
-            "Advanced" uses Frigate's GenAI short summary, or the cameras if
-            no summary arrived in time. "None" sends no text.
+            "Advanced" uses the summary written by "Summarize with AI" below
+            if it's set, otherwise Frigate's GenAI short summary, or the
+            cameras if no summary arrived in time. "None" sends no text.
 
 
             With "Advanced", every camera's review in the journey can get its
-            own GenAI summary. The one Frigate rates as the biggest potential
-            threat is used, or the first camera's if they are rated the same,
-            unless "Combine Summaries with AI" below is set.
+            own GenAI summary. Without "Summarize with AI", the one Frigate
+            rates as the biggest potential threat is used, or the first
+            camera's if they are rated the same.
           default: cameras
           selector:
             select:
@@ -414,16 +416,17 @@ blueprint:
                   value: none
 
         ai_task:
-          name: Combine Summaries with AI (optional)
+          name: Summarize with AI (optional)
           description: >
             An AI Task entity (Settings -> Devices & services, e.g. Ollama,
-            OpenAI or Google Generative AI) that combines the GenAI summaries
-            of a journey's cameras into one title, summary and description,
+            OpenAI or Google Generative AI) that writes the "Advanced" title
+            and text instead of Frigate's GenAI. It combines the GenAI
+            summaries of a journey's cameras (or rewrites the one summary of
+            a single-camera journey) into one title, summary and description,
             in the order things happened and using the recognized names.
-            Only the summaries' text is sent, no images. Used when two or
-            more cameras have a summary; if it fails, the summary Frigate
-            rates as the biggest potential threat is used instead. Leave
-            blank to turn off.
+            Only the summaries' text is sent, no images. If it fails, the
+            summary Frigate rates as the biggest potential threat is used
+            instead. Leave blank to turn off.
           default: ""
           selector:
             entity:
@@ -433,7 +436,7 @@ blueprint:
         ai_instructions:
           name: Extra AI Instructions (optional)
           description: >
-            Anything else the AI should know when combining the summaries,
+            Anything else the AI should know when writing the summary,
             e.g. "Zach is the homeowner. Gerry and Sue are neighbours."
           default: ""
           selector:
@@ -1107,25 +1110,30 @@ actions:
       # Set by the AI Task below, if it's used
       ai_combined: {}
 
-  # Optionally have an AI Task combine the cameras' GenAI summaries into one,
-  # in the order things happened. Only their text is sent. If it fails, the
-  # summary picked above is used.
+  # Optionally have an AI Task write the summary instead of Frigate's GenAI:
+  # the cameras' summaries combined into one, in the order things happened,
+  # or a single camera's summary rewritten. Only their text is sent. If it
+  # fails, the summary picked above is used.
   - if:
       - condition: template
         value_template: >
-          {{ input_ai_task not in ['', none] and collect_genai and summaries | count > 1 }}
+          {{ input_ai_task not in ['', none] and collect_genai and summaries | count > 0 }}
     then:
       - variables:
           ai_response: {}
           ai_prompt: >
             {% set names = person_names %}
+            {% set several = summaries | count > 1 %}
             {% set rules = [
-                 'You are writing one home security notification for an event that several cameras saw, one after another. Below is the AI summary of each camera\'s footage, in the order they happened. Combine them into one account of the whole event, from start to finish.',
+                 'You are writing one home security notification for an event that several cameras saw, one after another. Below is the AI summary of each camera\'s footage, in the order they happened. Combine them into one account of the whole event, from start to finish.'
+                   if several else
+                 'You are writing one home security notification for an event a camera saw. Below is the AI summary of its footage. Rewrite it as the notification.',
                  '',
                  'Rules:',
-                 '- Use only what the summaries say. Do not add details, guess at intentions, or mention cameras, footage, summaries or AI. Places (the driveway, the front door) are fine.',
-                 '- Treat it as one continuous event: the same ' ~ (label | replace('_', ' ') or 'subject') ~ ' moving from place to place, unless the summaries clearly describe more than one.',
-                 '- Face recognition identified: ' ~ names | join(', ') ~ '. Call them by name, even where a summary says "unidentified person".'
+                 '- Use only what the summaries say. Do not add details, guess at intentions, or mention cameras, footage, summaries or AI. Places (the driveway, the front door) are fine.']
+               + (['- Treat it as one continuous event: the same ' ~ (label | replace('_', ' ') or 'subject') ~ ' moving from place to place, unless the summaries clearly describe more than one.']
+                   if several else [])
+               + ['- Face recognition identified: ' ~ names | join(', ') ~ '. Call them by name, even where a summary says "unidentified person".'
                    if names else
                  '- Nobody was recognized. Refer to people generically (e.g. "a person"), never as "unidentified" or "unknown".',
                  '- title: a short headline, under 8 words.',
@@ -1383,8 +1391,8 @@ actions:
             {% set o = summary.other_concerns | default([], true) %}
             {{ [o] if o is string else o | list }}
           threat: "{{ summary.potential_threat_level | default(0, true) | int(0) }}"
-          # The cameras' own GenAI summaries the AI Task combined, so the
-          # dashboard can show where the combined summary came from
+          # The cameras' own GenAI summaries the AI Task worked from, so the
+          # dashboard can show where its summary came from
           sources: >
             {% set ns = namespace(list=[]) %}
             {% if ai_combined %}
