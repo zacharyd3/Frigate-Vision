@@ -20,20 +20,16 @@ Commands (arguments are key=value pairs):
            [size=640] [shape=auto|landscape|portrait|square]
            [background=blur|black] [fps=8] [speed=2] [max_length=20]
            [pre=1] [post=2] [labels=1] [retries=3] [keep_hours=48]
-           [phone_size=480] [phone_mb=2]
         Each <seen> is when the camera picked up an object again during
         its review (the start time of each of the review's detections).
         Starts rendering in the background (shell_command stops anything
         that runs longer than 60 seconds) and prints {"status": "started"}.
 
     status job=<id>
-        Prints {"status": "running" | "done" | "failed", "url": ...,
-                "phone_url": ..., "error": ...}
+        Prints {"status": "running" | "done" | "failed", "url": ..., "error": ...}
 
 The GIF is written to <config>/www/frigate_vision/<job>.gif, which Home
-Assistant serves as /local/frigate_vision/<job>.gif. If it is bigger than
-phone_mb or phone_size, a smaller copy for the notification image is written
-to <job>-phone.gif (phone_url); otherwise phone_url is the GIF itself.
+Assistant serves as /local/frigate_vision/<job>.gif.
 """
 
 import glob
@@ -68,8 +64,6 @@ DEFAULTS = {
     "labels": 1,
     "retries": 3,
     "keep_hours": 48,
-    "phone_size": 480,
-    "phone_mb": 2.0,
 }
 
 
@@ -326,46 +320,6 @@ def render_gif(inputs, opts, out_path, with_labels, log):
     return True
 
 
-def phone_gif(src, tmp_dir, w, h, opts, log):
-    """A copy of the GIF small enough for the notification image.
-
-    The Android app (14+) downloads the whole GIF for the notification and the
-    notification shade plays it. A big GIF fails to download or load there,
-    and the shade then drops the notification, leaving only the app's empty
-    group header. So a GIF that is too big is scaled down, and then thinned
-    out, until it fits. Returns the path to use, or None if ffmpeg failed.
-    """
-    max_bytes = float(opts["phone_mb"]) * 1024 * 1024
-    edge = min(max(w, h), int(opts["phone_size"]))
-    if src.stat().st_size <= max_bytes and max(w, h) <= edge:
-        return src
-    fps = int(opts["fps"])
-    slow = max(2, fps // 2)
-    out = None
-    for i, (scale, rate) in enumerate(((1, fps), (0.8, fps), (0.65, fps),
-                                       (0.65, slow), (0.5, slow))):
-        pw = int(round(w * edge * scale / max(w, h) / 2)) * 2
-        ph = int(round(h * edge * scale / max(w, h) / 2)) * 2
-        out = Path(tmp_dir) / f"phone{i}.gif"
-        result = subprocess.run(
-            [FFMPEG, "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
-             "-i", str(src), "-filter_complex",
-             f"[0:v]fps={rate},scale={pw}:{ph}:flags=lanczos,setsar=1,split[a][b];"
-             "[a]palettegen=max_colors=128:stats_mode=diff[p];"
-             "[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle",
-             "-loop", "0", str(out)],
-            capture_output=True, text=True, timeout=600,
-        )
-        if result.returncode != 0:
-            log(f"phone GIF failed: {result.stderr.strip()[-800:]}")
-            return None
-        size = out.stat().st_size
-        log(f"phone GIF {pw}x{ph} at {rate} fps: {size / 1048576:.1f} MB")
-        if size <= max_bytes:
-            break
-    return out
-
-
 def cleanup(keep_hours):
     cutoff = time.time() - keep_hours * 3600
     for folder, patterns in ((OUT_DIR, ("*.gif",)), (JOBS_DIR, ("*.json", "*.status", "*.log"))):
@@ -428,20 +382,12 @@ def worker(job):
             if not ok:
                 raise RuntimeError("ffmpeg could not render the GIF (see log)")
             log(f"GIF: {tmp_gif.stat().st_size / 1048576:.1f} MB")
-            w, h = canvas_size(inputs, int(opts["size"]), opts["shape"])
-            phone = phone_gif(tmp_gif, tmp, w, h, opts, log)
-            phone_name = f"{job}.gif"
-            if phone is not None and phone != tmp_gif:
-                phone_name = f"{job}-phone.gif"
-                shutil.move(str(phone), OUT_DIR / phone_name)
-                (OUT_DIR / phone_name).chmod(0o644)
             final = OUT_DIR / f"{job}.gif"
             shutil.move(str(tmp_gif), final)
             final.chmod(0o644)
 
         log("done")
-        write_status(status_path, status="done", url=f"{URL_PREFIX}/{job}.gif",
-                     phone_url=f"{URL_PREFIX}/{phone_name}")
+        write_status(status_path, status="done", url=f"{URL_PREFIX}/{job}.gif")
     except Exception as err:  # noqa: BLE001 - report every failure to the blueprint
         log(f"failed: {err}")
         write_status(status_path, status="failed", error=str(err))
@@ -490,8 +436,6 @@ def cmd_render(opts):
         except ValueError:
             fail_usage(f"invalid {key}")
     spec["size"] = max(120, min(spec["size"], 1920))
-    spec["phone_size"] = max(120, min(spec["phone_size"], 1920))
-    spec["phone_mb"] = max(0.25, spec["phone_mb"])
     spec["shape"] = opts.get("shape", "auto")
     if spec["shape"] not in ("auto", *SHAPES):
         fail_usage("invalid shape")

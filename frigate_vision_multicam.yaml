@@ -95,6 +95,17 @@ blueprint:
                 - bicycle
                 - motorcycle
 
+        link_detections:
+          name: Link Detections
+          description: >
+            ON = a review of any severity can join a journey once it has
+            started (e.g. a "detection" on the driveway camera joining a
+            person "alert" at the front door). OFF = only reviews that pass
+            the Review Severity filter can join.
+          default: true
+          selector:
+            boolean: {}
+
         cooldown:
           name: Cooldown
           description: >
@@ -108,9 +119,9 @@ blueprint:
           selector:
             duration: {}
 
-    journey_options:
-      name: Journey
-      icon: mdi:transit-connection-variant
+    timing:
+      name: Timing
+      icon: mdi:timer-outline
       collapsed: true
       input:
         link_gap:
@@ -119,9 +130,9 @@ blueprint:
             How long after the object was last seen a review on another
             camera still counts as the same journey. Reviews that overlap are
             always linked. A longer gap follows objects further (e.g. walking
-            around the house out of view), but the notification's GIF comes
-            that much later, because the journey only ends once this much
-            time has passed with nothing new.
+            around the house out of view), but the notification comes that
+            much later, because the journey only ends once this much time has
+            passed with nothing new.
           default: 20
           selector:
             number:
@@ -130,17 +141,6 @@ blueprint:
               step: 1
               unit_of_measurement: seconds
               mode: slider
-
-        link_detections:
-          name: Link Detections
-          description: >
-            ON = a review of any severity can join a journey once it has
-            started (e.g. a "detection" on the driveway camera joining a
-            person "alert" at the front door). OFF = only reviews that pass
-            the Review Severity filter can join.
-          default: true
-          selector:
-            boolean: {}
 
         max_journey:
           name: Maximum Journey Length
@@ -153,6 +153,54 @@ blueprint:
             seconds: 0
           selector:
             duration: {}
+
+        recording_delay:
+          name: Recording Delay (seconds)
+          description: >
+            How long to wait after the journey ends (the Link Gap has passed
+            with nothing new) before fetching the recordings. Frigate only
+            saves a recording once its segment (about 10s) is finished; the
+            script retries a short clip a few times anyway.
+          default: 15
+          selector:
+            number:
+              min: 0
+              max: 120
+              step: 1
+              unit_of_measurement: seconds
+              mode: slider
+
+        render_timeout:
+          name: GIF Timeout (seconds)
+          description: >
+            Give up on the custom GIF after this long and use Frigate's GIF
+            of the first camera. Rendering full resolution recordings can
+            take a while on slow hardware such as a Raspberry Pi.
+          default: 180
+          selector:
+            number:
+              min: 30
+              max: 900
+              step: 10
+              unit_of_measurement: seconds
+              mode: box
+
+        genai_timeout:
+          name: GenAI Summary Timeout (seconds)
+          description: >
+            How long after the journey ends to wait for Frigate's GenAI
+            summaries before sending the notification (when the notification
+            or the history uses them). Frigate often only summarises alerts,
+            so a journey with detections can wait this long. Lower it if
+            notifications come too late.
+          default: 90
+          selector:
+            number:
+              min: 10
+              max: 600
+              step: 5
+              unit_of_measurement: seconds
+              mode: slider
 
     gif_options:
       name: GIF
@@ -259,24 +307,6 @@ blueprint:
               unit_of_measurement: seconds
               mode: slider
 
-        phone_gif_mb:
-          name: Notification GIF Limit (MB)
-          description: >
-            Android plays the notification GIF in the notification shade, and
-            drops the whole notification (leaving just an empty "Home
-            Assistant" group header) if the GIF is too big to load. A journey
-            GIF bigger than this, or bigger than 480px, gets a smaller copy
-            for the Android notification image. "View GIF", the tap action
-            and the history dashboard still open the full GIF.
-          default: 2
-          selector:
-            number:
-              min: 0.5
-              max: 10
-              step: 0.5
-              unit_of_measurement: MB
-              mode: box
-
         camera_labels:
           name: Camera Names in GIF
           description: >
@@ -286,36 +316,31 @@ blueprint:
           selector:
             boolean: {}
 
-        recording_delay:
-          name: Recording Delay (seconds)
+        pre_padding:
+          name: Lead-in (seconds)
           description: >
-            How long to wait after the journey ends before fetching the
-            recordings. Frigate only saves a recording once its segment
-            (about 10s) is finished; the script retries a short clip a few
-            times anyway.
-          default: 15
+            Seconds of recording to show before the object first appears
+            (and before it reappears after being out of view).
+          default: 1
           selector:
             number:
               min: 0
-              max: 120
-              step: 1
+              max: 10
+              step: 0.5
               unit_of_measurement: seconds
               mode: slider
 
-        render_timeout:
-          name: GIF Timeout (seconds)
-          description: >
-            Give up on the custom GIF after this long and use Frigate's GIF
-            of the first camera. Rendering full resolution recordings can
-            take a while on slow hardware such as a Raspberry Pi.
-          default: 180
+        post_padding:
+          name: Lead-out (seconds)
+          description: Seconds of recording to show after each camera loses the object.
+          default: 2
           selector:
             number:
-              min: 30
-              max: 900
-              step: 10
+              min: 0
+              max: 10
+              step: 0.5
               unit_of_measurement: seconds
-              mode: box
+              mode: slider
 
     notification_options:
       name: Notification Options
@@ -476,23 +501,6 @@ blueprint:
           selector:
             text: {}
 
-        genai_timeout:
-          name: GenAI Summary Timeout (seconds)
-          description: >
-            How long after the journey ends to wait for Frigate's GenAI
-            summaries before sending the notification (when the notification
-            or the history uses them). Frigate often only summarises alerts,
-            so a journey with detections can wait this long. Lower it if
-            notifications come too late.
-          default: 90
-          selector:
-            number:
-              min: 10
-              max: 600
-              step: 5
-              unit_of_measurement: seconds
-              mode: slider
-
         history:
           name: Record History (for the dashboard)
           description: >
@@ -504,32 +512,6 @@ blueprint:
           default: true
           selector:
             boolean: {}
-
-        pre_padding:
-          name: Lead-in (seconds)
-          description: >
-            Seconds of recording to show before the object first appears
-            (and before it reappears after being out of view).
-          default: 1
-          selector:
-            number:
-              min: 0
-              max: 10
-              step: 0.5
-              unit_of_measurement: seconds
-              mode: slider
-
-        post_padding:
-          name: Lead-out (seconds)
-          description: Seconds of recording to show after each camera loses the object.
-          default: 2
-          selector:
-            number:
-              min: 0
-              max: 10
-              step: 0.5
-              unit_of_measurement: seconds
-              mode: slider
 
 # ---------------------------------------------------------------------------
 # Every review that matches the filters starts a run. If another run of this
@@ -611,7 +593,6 @@ actions:
       input_gif_fps: !input gif_fps
       input_gif_speed: !input gif_speed
       input_gif_max_length: !input gif_max_length
-      input_phone_gif_mb: !input phone_gif_mb
       input_camera_labels: !input camera_labels
       input_recording_delay: !input recording_delay
       input_render_timeout: !input render_timeout
@@ -733,8 +714,6 @@ actions:
       # then moves on to then_stage.
       stage: active
       gif_url: ""
-      # Smaller copy of the journey GIF for the Android notification image
-      phone_gif_url: ""
       # GenAI summaries of the journey's reviews: [{id, start, threat, meta}]
       summaries: []
       hold_until: 0
@@ -743,7 +722,6 @@ actions:
       job: ""
       render_status: skipped
       render_url: ""
-      render_phone_url: ""
       render_error: ""
       render_deadline: 0
 
@@ -891,21 +869,20 @@ actions:
                          or (then_stage == 'done' and summaries | count >= members | count)
                          else 'hold' }}
 
-            # Journey over: wait until Frigate has finished its own GIF of the
-            # first camera (~10s after the review), so there is always a GIF
-            # even if the journey GIF can't be built. Then wait for Frigate to
-            # save the recordings before building the journey GIF.
+            # Journey over: wait for Frigate to save the recordings, then build
+            # the journey GIF. Frigate's own GIF of the first camera is the
+            # fallback if it can't be built (or with no Frigate URL, once
+            # Frigate has made it, ~10s after the review).
             - conditions: "{{ stage == 'ended' }}"
               sequence:
                 - variables:
-                    ready: "{{ now().timestamp() >= last_end_at + 10 - 0.05 }}"
-                - variables:
-                    ended_at: "{{ now().timestamp() if ready else ended_at }}"
-                    gif_url: "{{ frigate_gif_url if ready else gif_url }}"
+                    ended_at: "{{ now().timestamp() }}"
+                    gif_url: "{{ frigate_gif_url }}"
                     hold_until: >
-                      {{ now().timestamp() + input_recording_delay if ready else last_end_at + 10 }}
-                    then_stage: "{{ 'render' if ready else 'ended' }}"
-                    stage: "{{ 'hold' if not ready or frigate_api else 'summary' }}"
+                      {{ now().timestamp() + input_recording_delay if frigate_api
+                         else [now().timestamp(), last_end_at + 10] | max }}
+                    then_stage: "{{ 'render' if frigate_api else 'summary' }}"
+                    stage: hold
 
             # Have the script build the journey GIF in the background
             - conditions: "{{ stage == 'render' }}"
@@ -919,7 +896,6 @@ actions:
                       background={{ input_gif_background }}
                       fps={{ input_gif_fps | int }} speed={{ input_gif_speed }}
                       max_length={{ input_gif_max_length }}
-                      phone_mb={{ input_phone_gif_mb }}
                       pre={{ input_pre_padding }} post={{ input_post_padding }}
                       labels={{ 1 if input_camera_labels else 0 }}
                       keep_hours={{ [48, (input_notification_timeout / 60) | round(0, 'ceil') | int + 1] | max }}
@@ -971,9 +947,6 @@ actions:
                         render_url: >
                           {{ status_response.stdout | default('')
                              | regex_findall('"url": "([^"]+)"') | first | default('') }}
-                        render_phone_url: >
-                          {{ status_response.stdout | default('')
-                             | regex_findall('"phone_url": "([^"]+)"') | first | default('') }}
                         render_error: >
                           {{ status_response.stdout | default('')
                              | regex_findall('"error": "([^"]*)"') | first | default('') }}
@@ -1003,8 +976,6 @@ actions:
                     - variables:
                         gif_url: >
                           {{ render_url if render_status == 'done' and render_url else gif_url }}
-                        phone_gif_url: >
-                          {{ render_phone_url if render_status == 'done' and render_url else '' }}
                         stage: summary
 
             # GIF ready: wait for the GenAI summaries of any reviews that
@@ -1131,7 +1102,7 @@ actions:
                  'alert_once': true,
                  'clickAction': n_tap_url,
                  'url': n_tap_url,
-                 'image': phone_gif_url or image,
+                 'image': image,
                  'attachment': {'url': image},
                  'push': {'interruption-level': 'active'},
                  'actions': n_buttons } %}
