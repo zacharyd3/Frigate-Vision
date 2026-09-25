@@ -15,10 +15,13 @@ the Home Assistant container (python3 and ffmpeg). Put it in
 
 Commands (arguments are key=value pairs):
 
-    render job=<id> url=<frigate url> review=<camera>@<start>@<end> [review=...]
+    render job=<id> url=<frigate url> review=<camera>@<start>@<end>[@<seen>...]
+           [review=...]
            [size=640] [shape=auto|landscape|portrait|square]
            [background=blur|black] [fps=8] [speed=2] [max_length=20]
            [pre=1] [post=2] [labels=1] [retries=3] [keep_hours=48]
+        Each <seen> is when the camera picked up an object again during
+        its review (the start time of each of the review's detections).
         Starts rendering in the background (shell_command stops anything
         that runs longer than 60 seconds) and prints {"status": "started"}.
 
@@ -97,6 +100,11 @@ def write_status(path, **status):
 # ── Timeline ────────────────────────────────────────────────────────────────
 
 
+def last_seen(window, t):
+    """When the window's camera last picked the object up, as of time t."""
+    return max((s for s in window["seen"] if s <= t), default=window["seen"][0])
+
+
 def build_timeline(reviews, pre, post):
     """Turn review items into a list of (camera, start, end) pieces.
 
@@ -105,7 +113,10 @@ def build_timeline(reviews, pre, post):
     the camera that most recently picked the object up is shown, so the GIF
     hard-cuts to the next camera as soon as it sees the object, and falls
     back to a camera that still sees it if the newer one loses it first.
-    Stretches where no camera saw anything are skipped.
+    A camera that picks the object up again partway through its review
+    (a new detection) counts as the newest from then on, so walking back to
+    it cuts back straight away. Stretches where no camera saw anything are
+    skipped.
     """
     reviews = sorted(reviews, key=lambda r: r["start"])
     windows = []
@@ -116,20 +127,22 @@ def build_timeline(reviews, pre, post):
         windows.append(
             {
                 "camera": r["camera"],
-                "detected": r["start"],
+                "seen": [r["start"]]
+                + sorted(t for t in r.get("seen", []) if r["start"] < t < r["end"]),
                 "start": r["start"] if covered else r["start"] - pre,
                 "end": r["end"] + post,
             }
         )
 
-    bounds = sorted({w["start"] for w in windows} | {w["end"] for w in windows})
+    bounds = sorted({w["start"] for w in windows} | {w["end"] for w in windows}
+                    | {t for w in windows for t in w["seen"]})
     pieces = []
     for a, b in zip(bounds, bounds[1:]):
         mid = (a + b) / 2
         active = [w for w in windows if w["start"] <= mid < w["end"]]
         if not active:
             continue
-        camera = max(active, key=lambda w: w["detected"])["camera"]
+        camera = max(active, key=lambda w: last_seen(w, mid))["camera"]
         if pieces and pieces[-1]["camera"] == camera and abs(pieces[-1]["end"] - a) < 1e-6:
             pieces[-1]["end"] = b
         else:
@@ -196,9 +209,13 @@ def download_piece(base_url, piece, dest, retries, log):
         try:
             with urllib.request.urlopen(url, timeout=120) as resp, open(dest, "wb") as f:
                 shutil.copyfileobj(resp, f)
-        except (urllib.error.URLError, OSError) as err:
+        except urllib.error.HTTPError as err:
             log(f"{piece['camera']}: download failed ({err}), attempt {attempt + 1}")
             continue
+        except (urllib.error.URLError, OSError) as err:
+            # Frigate can't be reached at all, so retrying won't help
+            log(f"{piece['camera']}: download failed ({err}), not retrying")
+            break
         info = media_info(dest)
         log(f"{piece['camera']}: got {info[0]}s of {wanted:.1f}s at "
             f"{info[1]}x{info[2]}, attempt {attempt + 1}")
@@ -389,17 +406,27 @@ def cmd_render(opts):
     reviews = []
     for value in opts["review"]:
         parts = value.split("@")
-        if len(parts) != 3 or not NAME_RE.match(parts[0]):
+        if len(parts) < 3 or not NAME_RE.match(parts[0]):
             fail_usage(f"invalid review {value!r}")
         try:
             start, end = float(parts[1]), float(parts[2])
+            seen = [float(t) for t in parts[3:]]
         except ValueError:
             fail_usage(f"invalid review {value!r}")
         if end < start:
             end = start
-        reviews.append({"camera": parts[0], "start": start, "end": end})
+        reviews.append({"camera": parts[0], "start": start, "end": end, "seen": seen})
     if not reviews:
         fail_usage("no reviews given")
+
+    # Check Frigate answers before starting, so a wrong URL fails straight
+    # away with a clear error instead of every download hanging until the
+    # blueprint gives up
+    try:
+        with urllib.request.urlopen(f"{url}/api/version", timeout=10):
+            pass
+    except (urllib.error.URLError, OSError, ValueError) as err:
+        fail_usage(f"can't reach Frigate at {url} ({getattr(err, 'reason', err)})")
 
     spec = {"url": url, "reviews": reviews}
     for key, default in DEFAULTS.items():

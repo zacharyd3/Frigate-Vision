@@ -1053,7 +1053,11 @@ actions:
                       labels={{ 1 if input_camera_labels else 0 }}
                       keep_hours={{ [48, (input_notification_timeout / 60) | round(0, 'ceil') | int + 1] | max }}
                       {% for m in members | sort(attribute='start_time') -%}
-                        review={{ m.camera }}@{{ m.start_time }}@{{ m.end_time if m.end_time is not none else now().timestamp() }}{{ ' ' }}
+                        review={{ m.camera }}@{{ m.start_time }}@{{ m.end_time if m.end_time is not none else now().timestamp() }}
+                        {%- for d in m.data.detections | default([]) %}
+                          {%- set seen = d | string | regex_replace('-.*$', '') | float(0) %}
+                          {%- if seen > 0 %}@{{ seen }}{% endif %}
+                        {%- endfor %}{{ ' ' }}
                       {%- endfor %}
                     render_response: {}
                 - action: "{{ input_shell_service }}"
