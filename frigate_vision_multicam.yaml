@@ -477,6 +477,18 @@ blueprint:
               unit_of_measurement: seconds
               mode: slider
 
+        history:
+          name: Record History (for the dashboard)
+          description: >
+            Record each journey, with its GIF and Frigate's GenAI summary, for
+            the Frigate Vision history dashboard (see the README for its
+            one-time setup). The GenAI summary is recorded even when the
+            notification doesn't use it. Does nothing if the dashboard isn't
+            set up.
+          default: true
+          selector:
+            boolean: {}
+
         pre_padding:
           name: Lead-in (seconds)
           description: >
@@ -591,6 +603,10 @@ actions:
       input_message_style: !input message_style
       input_genai_timeout: !input genai_timeout
       use_genai: "{{ 'summary' in [input_title_style, input_message_style] }}"
+      input_history: !input history
+      # The history records the GenAI summary even when the notification
+      # doesn't use it
+      collect_genai: "{{ use_genai or input_history }}"
       input_buttons: !input buttons
       input_sublabel: !input sublabel
       input_append: !input append
@@ -713,6 +729,7 @@ actions:
       render_url: ""
       render_error: ""
       render_deadline: 0
+      recorded: ""
 
   # ── Journey loop ───────────────────────────────────────────────────────────
   # Each pass (1) sends/updates the notification if `send` is set, then
@@ -849,6 +866,61 @@ actions:
                 shown_names: "{{ person_names }}"
                 shown_summary: "{{ summary_pick.id | default('') }}"
 
+        # Record the journey for the history dashboard once it has a GIF, and
+        # again when the GIF or the GenAI summary changes
+        - variables:
+            history_key: "{{ gif_url }}|{{ summary_pick.id | default('') }}"
+        - if:
+            - condition: template
+              value_template: "{{ input_history and gif_url and recorded != history_key }}"
+          then:
+            - event: frigate_vision_history
+              event_data:
+                id: "{{ journey_id }}"
+                cameras: "{{ path }}"
+                severity: >
+                  {{ 'alert' if members | selectattr('severity', 'eq', 'alert') | list
+                     else 'detection' }}
+                start: "{{ members | map(attribute='start_time') | min }}"
+                end: >
+                  {{ members | map(attribute='end_time') | reject('none') | list
+                     | max | default(0) }}
+                objects: >
+                  {% set ns = namespace(found=[]) %}
+                  {% for m in members %}
+                    {% set d = m.data | default({}) %}
+                    {% set ns.found = ns.found + d.objects | default([]) + d.audio | default([]) %}
+                  {% endfor %}
+                  {% set found = ns.found | map('replace', '-verified', '') | unique | list %}
+                  {{ [label] + found | reject('eq', label) | list if label else found }}
+                names: "{{ person_names }}"
+                zones: >
+                  {{ members | map(attribute='data.zones') | map('default', [])
+                     | sum(start=[]) | unique | list }}
+                gif: "{{ gif_url }}"
+                # The journey GIF is deleted after keep_hours (see render_args),
+                # after which the dashboard shows Frigate's GIF instead
+                gif_until: >
+                  {% set keep_hours = [48, (input_notification_timeout / 60) | round(0, 'ceil') | int + 1] | max %}
+                  {{ now().timestamp() + (keep_hours - 1) * 3600
+                     if gif_url != frigate_gif_url else 0 }}
+                gif_fallback: "{{ frigate_gif_url }}"
+                thumbnail: "{{ thumbnail_url | trim }}"
+                clip: "{{ clip_url | trim }}"
+                frigate: "{{ frigate_review_url | trim }}"
+                title: "{{ summary.title | default('', true) }}"
+                summary: "{{ summary.shortSummary | default('', true) }}"
+                scene: "{{ summary.scene | default('', true) }}"
+                observations: >
+                  {% set o = summary.observations | default([], true) %}
+                  {{ [o] if o is string else o | list }}
+                concerns: >
+                  {% set o = summary.other_concerns | default([], true) %}
+                  {{ [o] if o is string else o | list }}
+                threat: "{{ summary.potential_threat_level | default(0, true) | int(0) }}"
+            - variables:
+                recorded: "{{ history_key }}"
+
         - choose:
 
             # Journey in progress: add reviews that link to it and follow them
@@ -926,7 +998,7 @@ actions:
                           {% set a = p.after | default({}) %}
                           {% set m = members | selectattr('id', 'eq', a.id | default('')) | list %}
                           {% set meta = (a.data | default({})).metadata | default({}, true) %}
-                          {% if use_genai and p.type | default('') == 'genai' and m and meta %}
+                          {% if collect_genai and p.type | default('') == 'genai' and m and meta %}
                             {{ summaries | rejectattr('id', 'eq', a.id) | list
                                + [{'id': a.id, 'start': m[0].start_time, 'meta': meta,
                                    'threat': meta.potential_threat_level | default(0, true) | int(0)}] }}
@@ -974,7 +1046,7 @@ actions:
                           {{ input_notify_immediately
                              and ((send and (new_path != shown_cameras
                                    or (input_sublabel and (new_names | sort) != (shown_names | sort))))
-                                  or new_summary_id != shown_summary) }}
+                                  or (use_genai and new_summary_id != shown_summary)) }}
 
             # Wait until hold_until, then go on to then_stage. With a GenAI
             # title or text, keep listening for GenAI summaries meanwhile and
@@ -983,7 +1055,7 @@ actions:
               sequence:
                 - if:
                     - condition: template
-                      value_template: "{{ use_genai }}"
+                      value_template: "{{ collect_genai }}"
                   then:
                     - wait_for_trigger:
                         - trigger: mqtt
@@ -1000,7 +1072,7 @@ actions:
                           {% set a = p.after | default({}) %}
                           {% set m = members | selectattr('id', 'eq', a.id | default('')) | list %}
                           {% set meta = (a.data | default({})).metadata | default({}, true) %}
-                          {% if use_genai and p.type | default('') == 'genai' and m and meta %}
+                          {% if collect_genai and p.type | default('') == 'genai' and m and meta %}
                             {{ summaries | rejectattr('id', 'eq', a.id) | list
                                + [{'id': a.id, 'start': m[0].start_time, 'meta': meta,
                                    'threat': meta.potential_threat_level | default(0, true) | int(0)}] }}
@@ -1014,7 +1086,7 @@ actions:
                     new_summary_id: >
                       {{ (summaries | sort(attribute='start') | sort(attribute='threat', reverse=true)
                           | first | default({})).id | default('') }}
-                    send: "{{ alerted and new_summary_id != shown_summary }}"
+                    send: "{{ alerted and use_genai and new_summary_id != shown_summary }}"
                     stage: >
                       {{ then_stage if now().timestamp() >= hold_until - 0.05
                          or (then_stage == 'finish' and summaries | count >= members | count)
@@ -1143,7 +1215,7 @@ actions:
                     then_stage: finish
                     send: false
                     stage: >
-                      {{ 'hold' if use_genai and summaries | count < members | count
+                      {{ 'hold' if collect_genai and summaries | count < members | count
                          and now().timestamp() < ended_at + input_genai_timeout else 'finish' }}
 
             # GIF sent: nothing left to do

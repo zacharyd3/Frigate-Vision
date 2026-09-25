@@ -1,0 +1,107 @@
+# Frigate Vision - History
+#
+# Keeps the last reviews (and journeys) recorded by the Frigate Vision
+# blueprints, for the history dashboard in frigate_vision_dashboard.yaml.
+#
+# Install as a package: save this file as /config/packages/frigate_vision_history.yaml
+# and make sure configuration.yaml has
+#
+#   homeassistant:
+#     packages: !include_dir_named packages
+#
+# then restart Home Assistant. See the README for details.
+
+template:
+  # The history itself. Each review is recorded when its GIF is ready and again
+  # when Frigate's GenAI summary comes in, replacing the earlier record.
+  - triggers:
+      - trigger: event
+        event_type: frigate_vision_history
+    sensor:
+      - name: Frigate Vision History
+        unique_id: frigate_vision_history
+        icon: mdi:cctv
+        device_class: timestamp
+        # When the latest review started
+        state: >
+          {% set e = trigger.event.data %}
+          {% if e.clear_history | default(false) %}
+            {{ none }}
+          {% else %}
+            {% set starts = this.attributes.events | default([], true)
+                 | map(attribute='start') | list + [e.start | float(0)] %}
+            {{ as_datetime(starts | max) }}
+          {% endif %}
+        attributes:
+          events: >
+            {% set keep = 40 %}
+            {% set e = trigger.event.data %}
+            {% if e.clear_history | default(false) %}
+              {{ [] }}
+            {% else %}
+              {% set old = this.attributes.events | default([], true)
+                   | rejectattr('id', 'eq', e.id) | list %}
+              {{ ((old + [dict(e)]) | sort(attribute='start', reverse=true) | list)[:keep] }}
+            {% endif %}
+
+  # Camera filter for the dashboard. Lists every camera in the history, and
+  # remembers the choice in input_text.frigate_vision_camera.
+  - select:
+      - name: Frigate Vision Camera
+        unique_id: frigate_vision_camera
+        icon: mdi:cctv
+        options: >
+          {% set ns = namespace(cams=[]) %}
+          {% for e in state_attr('sensor.frigate_vision_history', 'events') or [] %}
+            {% set ns.cams = ns.cams + e.cameras | default([]) %}
+          {% endfor %}
+          {{ ['All cameras'] + ns.cams | map('replace', '_', ' ') | map('replace', '-', ' ')
+             | map('title') | unique | sort | list }}
+        state: >
+          {% set c = states('input_text.frigate_vision_camera') %}
+          {{ c if c not in ['', 'unknown', 'unavailable'] else 'All cameras' }}
+        select_option:
+          - action: input_text.set_value
+            target:
+              entity_id: input_text.frigate_vision_camera
+            data:
+              value: "{{ option }}"
+
+input_text:
+  frigate_vision_camera:
+    name: Frigate Vision Camera Filter
+    icon: mdi:cctv
+    max: 255
+
+# What kind of events the dashboard shows
+input_select:
+  frigate_vision_show:
+    name: Frigate Vision Show
+    icon: mdi:filter-variant
+    options:
+      - Everything
+      - Alerts
+      - People
+      - Vehicles
+      - Animals
+      - Potential threats
+
+script:
+  frigate_vision_clear_history:
+    alias: Frigate Vision - Clear History
+    icon: mdi:delete-sweep
+    mode: single
+    sequence:
+      - event: frigate_vision_history
+        event_data:
+          clear_history: true
+
+# The history is kept in the sensor's attributes, which are bigger than the
+# recorder stores (16 KB), so it logs a warning. The sensor still works and
+# survives restarts. To silence the warning, add this to configuration.yaml
+# (merging it with any recorder: section you already have):
+#
+#   recorder:
+#     exclude:
+#       entities:
+#         - sensor.frigate_vision_history
