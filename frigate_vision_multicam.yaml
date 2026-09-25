@@ -7,6 +7,11 @@ blueprint:
     moves (e.g. Street -> Driveway -> Front Door).
 
 
+    The notification is sent once the journey is completely done: the GIF
+    is built and Frigate's GenAI summary is in. It arrives 30-90s after the
+    object is gone, and never changes after that.
+
+
     Reviews on your cameras are linked into one journey when they are for the
     same kind of object (person, car, dog...) and each one starts within the
     Link Gap of the previous one ending. A journey that stays on one camera
@@ -254,6 +259,24 @@ blueprint:
               unit_of_measurement: seconds
               mode: slider
 
+        phone_gif_mb:
+          name: Notification GIF Limit (MB)
+          description: >
+            Android plays the notification GIF in the notification shade, and
+            drops the whole notification (leaving just an empty "Home
+            Assistant" group header) if the GIF is too big to load. A journey
+            GIF bigger than this, or bigger than 480px, gets a smaller copy
+            for the Android notification image. "View GIF", the tap action
+            and the history dashboard still open the full GIF.
+          default: 2
+          selector:
+            number:
+              min: 0.5
+              max: 10
+              step: 0.5
+              unit_of_measurement: MB
+              mode: box
+
         camera_labels:
           name: Camera Names in GIF
           description: >
@@ -299,24 +322,14 @@ blueprint:
       icon: mdi:message-image
       collapsed: true
       input:
-        notify_immediately:
-          name: Notify Immediately
-          description: >
-            ON = send a notification with a thumbnail as soon as the journey
-            starts, update it as the object reaches more cameras, then with
-            the GIF at the end. OFF = stay quiet until the GIF is ready.
-          default: true
-          selector:
-            boolean: {}
-
         title_style:
           name: Notification Title
           description: >
             "What was detected" e.g. "Zach detected". "Cameras" e.g.
             "Front Door Cam → Back Door Cam". "Advanced" uses Frigate's GenAI
-            title (Frigate 0.17+ with review -> genai enabled) once it
-            arrives, with ⚠️/🚨 if Frigate rates it as a potential threat,
-            and what was detected until then. "None" sends no title.
+            title (Frigate 0.17+ with review -> genai enabled), with ⚠️/🚨
+            if Frigate rates it as a potential threat, or what was detected
+            if no summary arrived in time. "None" sends no title.
           default: subject
           selector:
             select:
@@ -334,10 +347,10 @@ blueprint:
           name: Notification Text
           description: >
             "Cameras" lists the cameras in the order the object reached them,
-            with the journey length once it ends, e.g. "Front Door Cam → Back
-            Door Cam (0:05)". "What was detected" e.g. "Zach was detected".
-            "Advanced" uses Frigate's GenAI short summary once it arrives,
-            and the cameras until then. "None" sends no text.
+            with the journey length, e.g. "Front Door Cam → Back Door Cam
+            (0:05)". "What was detected" e.g. "Zach was detected".
+            "Advanced" uses Frigate's GenAI short summary, or the cameras if
+            no summary arrived in time. "None" sends no text.
 
 
             With "Advanced", every camera's review in the journey can get its
@@ -466,8 +479,11 @@ blueprint:
         genai_timeout:
           name: GenAI Summary Timeout (seconds)
           description: >
-            With an "Advanced" title or text, how long after the journey ends
-            to keep waiting for Frigate's GenAI summaries.
+            How long after the journey ends to wait for Frigate's GenAI
+            summaries before sending the notification (when the notification
+            or the history uses them). Frigate often only summarises alerts,
+            so a journey with detections can wait this long. Lower it if
+            notifications come too late.
           default: 90
           selector:
             number:
@@ -595,10 +611,10 @@ actions:
       input_gif_fps: !input gif_fps
       input_gif_speed: !input gif_speed
       input_gif_max_length: !input gif_max_length
+      input_phone_gif_mb: !input phone_gif_mb
       input_camera_labels: !input camera_labels
       input_recording_delay: !input recording_delay
       input_render_timeout: !input render_timeout
-      input_notify_immediately: !input notify_immediately
       input_title_style: !input title_style
       input_message_style: !input message_style
       input_genai_timeout: !input genai_timeout
@@ -695,7 +711,10 @@ actions:
 
       first_camera: "{{ review.camera }}"
       first_event_id: "{{ (review.data.detections | default([]) | first) or '' }}"
-      base_url: "{{ input_base_url | trim | regex_replace('/+$', '') }}"
+      # Lower-case the scheme: Android won't open an "Https://" link
+      base_url: >
+        {% set b = input_base_url | trim | regex_replace('/+$', '') %}
+        {{ b.split('://')[0] | lower ~ '://' ~ b.split('://', 1)[1] if '://' in b else b }}
       frigate_gif_url: /api/frigate/notifications/{{ journey_id }}/review_preview.gif
       frigate_api: "{{ input_frigate_api_url | trim | regex_replace('/+$', '') }}"
       thumbnail_url: >
@@ -709,16 +728,13 @@ actions:
       zero_width_space: "\u200B"
 
       # State for the loop below
-      #   stage: active -> ended -> [render -> poll ->] summary -> finish -> done
+      #   stage: active -> ended -> [render -> poll ->] summary -> done
       # "hold" waits until hold_until (picking up GenAI summaries meanwhile),
       # then moves on to then_stage.
       stage: active
-      send: "{{ input_notify_immediately }}"
       gif_url: ""
-      alerted: false
-      shown_cameras: []
-      shown_names: []
-      shown_summary: ""
+      # Smaller copy of the journey GIF for the Android notification image
+      phone_gif_url: ""
       # GenAI summaries of the journey's reviews: [{id, start, threat, meta}]
       summaries: []
       hold_until: 0
@@ -727,199 +743,18 @@ actions:
       job: ""
       render_status: skipped
       render_url: ""
+      render_phone_url: ""
       render_error: ""
       render_deadline: 0
-      recorded: ""
 
   # ── Journey loop ───────────────────────────────────────────────────────────
-  # Each pass (1) sends/updates the notification if `send` is set, then
-  # (2) does whatever the current stage is waiting on. The notification always
-  # uses the same tag, so every send replaces the previous one.
+  # Each pass does whatever the current stage is waiting on. Nothing is sent
+  # until the loop is done.
   - repeat:
       until:
         - condition: template
           value_template: "{{ stage == 'done' }}"
       sequence:
-
-        - variables:
-            # Cameras in the order the object reached them, and the names of
-            # the people recognized along the way
-            path: >
-              {% set ns = namespace(cams=[]) %}
-              {% for m in members | sort(attribute='start_time') %}
-                {% if m.camera not in ns.cams %}{% set ns.cams = ns.cams + [m.camera] %}{% endif %}
-              {% endfor %}
-              {{ ns.cams }}
-            person_names: >
-              {% set ns = namespace(names=[]) %}
-              {% if label == 'person' %}
-                {% for m in members %}
-                  {% set others = m.data.objects | default([]) | map('replace', '-verified', '')
-                       | reject('in', ['person', 'face']) | list %}
-                  {% if not others %}
-                    {% set ns.names = ns.names + (m.data.sub_labels | default([]) | map('string') | list) %}
-                  {% endif %}
-                {% endfor %}
-              {% endif %}
-              {{ ns.names | reject('eq', '') | unique | list }}
-            # The GenAI summary to show: the one rated the biggest potential
-            # threat, or the first camera's if they are rated the same
-            summary_pick: >
-              {{ summaries | sort(attribute='start') | sort(attribute='threat', reverse=true)
-                 | first | default({}) }}
-            summary: "{{ summary_pick.meta | default({}) }}"
-
-        - if:
-            - condition: template
-              value_template: "{{ send and notify_services | count > 0 }}"
-          then:
-            - variables:
-                n_cameras: >
-                  {% set ns = namespace(names=[]) %}
-                  {% for cam in path %}
-                    {% set name = cam | replace('_', ' ') | replace('-', ' ') | title %}
-                    {% if input_expand %}
-                      {% set name = name | regex_replace('(?i)\\bcam\\b', 'Camera') %}
-                    {% endif %}
-                    {% set ns.names = ns.names + [name ~ (' Camera' if input_append else '')] %}
-                  {% endfor %}
-                  {{ ns.names | join(' → ') }}
-                n_group: >
-                  {% set name = first_camera | replace('_', ' ') | replace('-', ' ') | title %}
-                  {% if input_expand %}
-                    {% set name = name | regex_replace('(?i)\\bcam\\b', 'Camera') %}
-                  {% endif %}
-                  {{ name ~ (' Camera' if input_append else '') }}
-                n_subject: >
-                  {% set names = person_names if input_sublabel else [] %}
-                  {% set items = names if names else [label | replace('_', ' ')] %}
-                  {% if items | count > 1 %}
-                    {% set text = items[:-1] | join(', ') ~ ' and ' ~ items[-1] %}
-                  {% else %}
-                    {% set text = items[0] | default('activity', true) %}
-                  {% endif %}
-                  {{ text[:1] | upper ~ text[1:] }}
-                n_duration: >
-                  {% if gif_url %}
-                    {% set start = members | map(attribute='start_time') | min %}
-                    {% set end = members | map(attribute='end_time') | reject('none') | list | max | default(start) %}
-                    {% set s = (end - start) | round(0) | int %}
-                    {{ '%d:%02d' | format(s // 60, s % 60) }}
-                  {% endif %}
-                n_threat: "{{ summary.potential_threat_level | default(0, true) | int(0) }}"
-                n_title: >
-                  {% if input_title_style == 'cameras' %}{{ n_cameras }}
-                  {% elif input_title_style == 'summary' %}
-                    {% set t = summary.title | default('', true) or n_subject ~ ' detected' %}
-                    {{ ('🚨 ' if n_threat >= 2 else '⚠️ ' if n_threat == 1 else '') ~ t }}
-                  {% else %}{{ n_subject }} detected{% endif %}
-                n_message: >
-                  {% if input_message_style == 'subject' %}{{ n_subject }} was detected
-                  {% elif input_message_style == 'summary'
-                       and summary.shortSummary | default('', true) %}{{ summary.shortSummary }}
-                  {% else %}{{ n_cameras }}{{ ' (' ~ n_duration ~ ')' if n_duration else '' }}{% endif %}
-                n_gif_open_url: "{{ base_url ~ gif_url if gif_url else '' }}"
-                n_tap_url: >
-                  {% if input_tap_action == 'gif' and n_gif_open_url %}{{ n_gif_open_url }}
-                  {% elif input_tap_action in ['gif', 'frigate'] and frigate_review_url %}{{ frigate_review_url }}
-                  {% else %}{{ clip_url or frigate_review_url }}{% endif %}
-                n_buttons: >
-                  {% set b = [] %}
-                  {% if n_gif_open_url and 'gif' in input_buttons %}
-                    {% set b = b + [{'action': 'URI', 'title': 'View GIF', 'uri': n_gif_open_url}] %}
-                  {% endif %}
-                  {% if clip_url and 'clip' in input_buttons %}
-                    {% set b = b + [{'action': 'URI', 'title': 'View Clip', 'uri': clip_url}] %}
-                  {% endif %}
-                  {% if frigate_review_url and 'frigate' in input_buttons %}
-                    {% set b = b + [{'action': 'URI', 'title': 'Open in Frigate', 'uri': frigate_review_url}] %}
-                  {% endif %}
-                  {{ b[:3] }}
-                n_service_data: >
-                  {% set image = gif_url or thumbnail_url %}
-                  {% set data = {
-                       'tag': journey_id,
-                       'group': n_group,
-                       'channel': n_group ~ ' Notifications',
-                       'timeout': (input_notification_timeout * 60) | int,
-                       'ttl': 0,
-                       'priority': 'high',
-                       'alert_once': true,
-                       'clickAction': n_tap_url,
-                       'url': n_tap_url,
-                       'image': image,
-                       'attachment': {'url': image},
-                       'push': {'interruption-level': 'passive' if alerted else 'active'},
-                       'actions': n_buttons } %}
-                  {% set d = {'message': zero_width_space if input_message_style == 'none' else n_message,
-                              'data': data} %}
-                  {{ d if input_title_style == 'none' else dict(d, title=n_title) }}
-            - repeat:
-                for_each: "{{ notify_services }}"
-                sequence:
-                  - action: "{{ repeat.item }}"
-                    continue_on_error: true
-                    data: "{{ n_service_data }}"
-            - variables:
-                alerted: true
-                shown_cameras: "{{ path }}"
-                shown_names: "{{ person_names }}"
-                shown_summary: "{{ summary_pick.id | default('') }}"
-
-        # Record the journey for the history dashboard once it has a GIF, and
-        # again when the GIF or the GenAI summary changes
-        - variables:
-            history_key: "{{ gif_url }}|{{ summary_pick.id | default('') }}"
-        - if:
-            - condition: template
-              value_template: "{{ input_history and gif_url and recorded != history_key }}"
-          then:
-            - event: frigate_vision_history
-              event_data:
-                id: "{{ journey_id }}"
-                cameras: "{{ path }}"
-                severity: >
-                  {{ 'alert' if members | selectattr('severity', 'eq', 'alert') | list
-                     else 'detection' }}
-                start: "{{ members | map(attribute='start_time') | min }}"
-                end: >
-                  {{ members | map(attribute='end_time') | reject('none') | list
-                     | max | default(0) }}
-                objects: >
-                  {% set ns = namespace(found=[]) %}
-                  {% for m in members %}
-                    {% set d = m.data | default({}) %}
-                    {% set ns.found = ns.found + d.objects | default([]) + d.audio | default([]) %}
-                  {% endfor %}
-                  {% set found = ns.found | map('replace', '-verified', '') | unique | list %}
-                  {{ [label] + found | reject('eq', label) | list if label else found }}
-                names: "{{ person_names }}"
-                zones: >
-                  {{ members | map(attribute='data.zones') | map('default', [])
-                     | sum(start=[]) | unique | list }}
-                gif: "{{ gif_url }}"
-                # The journey GIF is deleted after keep_hours (see render_args),
-                # after which the dashboard shows Frigate's GIF instead
-                gif_until: >
-                  {% set keep_hours = [48, (input_notification_timeout / 60) | round(0, 'ceil') | int + 1] | max %}
-                  {{ now().timestamp() + (keep_hours - 1) * 3600
-                     if gif_url != frigate_gif_url else 0 }}
-                gif_fallback: "{{ frigate_gif_url }}"
-                thumbnail: "{{ thumbnail_url | trim }}"
-                clip: "{{ clip_url | trim }}"
-                frigate: "{{ frigate_review_url | trim }}"
-                title: "{{ summary.title | default('', true) }}"
-                summary: "{{ summary.shortSummary | default('', true) }}"
-                scene: "{{ summary.scene | default('', true) }}"
-                observations: >
-                  {% set o = summary.observations | default([], true) %}
-                  {{ [o] if o is string else o | list }}
-                concerns: >
-                  {% set o = summary.other_concerns | default([], true) %}
-                  {{ [o] if o is string else o | list }}
-                threat: "{{ summary.potential_threat_level | default(0, true) | int(0) }}"
-            - variables:
-                recorded: "{{ history_key }}"
 
         - choose:
 
@@ -1016,41 +851,9 @@ actions:
                           event_data:
                             automation: "{{ automation_id }}"
                             review_id: "{{ r.id }}"
-                    - variables:
-                        send: >
-                          {{ input_notify_immediately and (known or linkable) }}
-                        new_path: >
-                          {% set ns = namespace(cams=[]) %}
-                          {% for m in members | sort(attribute='start_time') %}
-                            {% if m.camera not in ns.cams %}{% set ns.cams = ns.cams + [m.camera] %}{% endif %}
-                          {% endfor %}
-                          {{ ns.cams }}
-                        new_names: >
-                          {% set ns = namespace(names=[]) %}
-                          {% if label == 'person' %}
-                            {% for m in members %}
-                              {% set others = m.data.objects | default([]) | map('replace', '-verified', '')
-                                   | reject('in', ['person', 'face']) | list %}
-                              {% if not others %}
-                                {% set ns.names = ns.names + (m.data.sub_labels | default([]) | map('string') | list) %}
-                              {% endif %}
-                            {% endfor %}
-                          {% endif %}
-                          {{ ns.names | reject('eq', '') | unique | list }}
-                    - variables:
-                        new_summary_id: >
-                          {{ (summaries | sort(attribute='start') | sort(attribute='threat', reverse=true)
-                              | first | default({})).id | default('') }}
-                        # Only re-send when the notification would change
-                        send: >
-                          {{ input_notify_immediately
-                             and ((send and (new_path != shown_cameras
-                                   or (input_sublabel and (new_names | sort) != (shown_names | sort))))
-                                  or (use_genai and new_summary_id != shown_summary)) }}
 
-            # Wait until hold_until, then go on to then_stage. With a GenAI
-            # title or text, keep listening for GenAI summaries meanwhile and
-            # update the notification when a better one comes in.
+            # Wait until hold_until, then go on to then_stage, picking up
+            # Frigate's GenAI summaries meanwhile.
             - conditions: "{{ stage == 'hold' }}"
               sequence:
                 - if:
@@ -1083,19 +886,15 @@ actions:
                     - delay:
                         seconds: "{{ [hold_until - now().timestamp(), 0] | max | round(1) }}"
                 - variables:
-                    new_summary_id: >
-                      {{ (summaries | sort(attribute='start') | sort(attribute='threat', reverse=true)
-                          | first | default({})).id | default('') }}
-                    send: "{{ alerted and use_genai and new_summary_id != shown_summary }}"
                     stage: >
                       {{ then_stage if now().timestamp() >= hold_until - 0.05
-                         or (then_stage == 'finish' and summaries | count >= members | count)
+                         or (then_stage == 'done' and summaries | count >= members | count)
                          else 'hold' }}
 
-            # Journey over: once Frigate has finished its own GIF of the first
-            # camera (~10s after the review), show it, so there is always a
-            # GIF even if the custom one can't be built. Then wait for Frigate
-            # to save the recordings before building the journey GIF.
+            # Journey over: wait until Frigate has finished its own GIF of the
+            # first camera (~10s after the review), so there is always a GIF
+            # even if the journey GIF can't be built. Then wait for Frigate to
+            # save the recordings before building the journey GIF.
             - conditions: "{{ stage == 'ended' }}"
               sequence:
                 - variables:
@@ -1103,7 +902,6 @@ actions:
                 - variables:
                     ended_at: "{{ now().timestamp() if ready else ended_at }}"
                     gif_url: "{{ frigate_gif_url if ready else gif_url }}"
-                    send: "{{ ready }}"
                     hold_until: >
                       {{ now().timestamp() + input_recording_delay if ready else last_end_at + 10 }}
                     then_stage: "{{ 'render' if ready else 'ended' }}"
@@ -1121,6 +919,7 @@ actions:
                       background={{ input_gif_background }}
                       fps={{ input_gif_fps | int }} speed={{ input_gif_speed }}
                       max_length={{ input_gif_max_length }}
+                      phone_mb={{ input_phone_gif_mb }}
                       pre={{ input_pre_padding }} post={{ input_post_padding }}
                       labels={{ 1 if input_camera_labels else 0 }}
                       keep_hours={{ [48, (input_notification_timeout / 60) | round(0, 'ceil') | int + 1] | max }}
@@ -1149,10 +948,9 @@ actions:
                     render_deadline: "{{ now().timestamp() + input_render_timeout }}"
                     hold_until: "{{ now().timestamp() + 3 }}"
                     then_stage: poll
-                    send: false
                     stage: "{{ 'hold' if render_status == 'running' else 'poll' }}"
 
-            # Check on the GIF every few seconds, and swap it in once it's ready
+            # Check on the GIF every few seconds until it's ready
             - conditions: "{{ stage == 'poll' }}"
               sequence:
                 - if:
@@ -1173,6 +971,9 @@ actions:
                         render_url: >
                           {{ status_response.stdout | default('')
                              | regex_findall('"url": "([^"]+)"') | first | default('') }}
+                        render_phone_url: >
+                          {{ status_response.stdout | default('')
+                             | regex_findall('"phone_url": "([^"]+)"') | first | default('') }}
                         render_error: >
                           {{ status_response.stdout | default('')
                              | regex_findall('"error": "([^"]*)"') | first | default('') }}
@@ -1184,7 +985,6 @@ actions:
                     - variables:
                         hold_until: "{{ now().timestamp() + 3 }}"
                         then_stage: poll
-                        send: false
                         stage: hold
                   else:
                     - if:
@@ -1201,32 +1001,195 @@ actions:
                               keeping Frigate's GIF of the first camera. The script's log
                               is /config/frigate_vision/jobs/{{ job }}.log
                     - variables:
-                        send: "{{ render_status == 'done' and render_url | length > 0 }}"
                         gif_url: >
                           {{ render_url if render_status == 'done' and render_url else gif_url }}
+                        phone_gif_url: >
+                          {{ render_phone_url if render_status == 'done' and render_url else '' }}
                         stage: summary
 
-            # GIF sent: with a GenAI title or text, keep waiting for the
-            # summaries of any reviews that don't have one yet
+            # GIF ready: wait for the GenAI summaries of any reviews that
+            # don't have one yet
             - conditions: "{{ stage == 'summary' }}"
               sequence:
                 - variables:
                     hold_until: "{{ ended_at + input_genai_timeout }}"
-                    then_stage: finish
-                    send: false
+                    then_stage: done
                     stage: >
                       {{ 'hold' if collect_genai and summaries | count < members | count
-                         and now().timestamp() < ended_at + input_genai_timeout else 'finish' }}
-
-            # GIF sent: nothing left to do
-            - conditions: "{{ stage == 'finish' }}"
-              sequence:
-                - variables:
-                    stage: done
-                    send: false
+                         and now().timestamp() < ended_at + input_genai_timeout else 'done' }}
 
           default:
             - variables:
                 stage: done
-                send: false
 
+  # ── Notify ─────────────────────────────────────────────────────────────────
+  # Everything is in: send the one notification, and record the journey for
+  # the history dashboard.
+  - variables:
+      # Cameras in the order the object reached them, and the names of
+      # the people recognized along the way
+      path: >
+        {% set ns = namespace(cams=[]) %}
+        {% for m in members | sort(attribute='start_time') %}
+          {% if m.camera not in ns.cams %}{% set ns.cams = ns.cams + [m.camera] %}{% endif %}
+        {% endfor %}
+        {{ ns.cams }}
+      person_names: >
+        {% set ns = namespace(names=[]) %}
+        {% if label == 'person' %}
+          {% for m in members %}
+            {% set others = m.data.objects | default([]) | map('replace', '-verified', '')
+                 | reject('in', ['person', 'face']) | list %}
+            {% if not others %}
+              {% set ns.names = ns.names + (m.data.sub_labels | default([]) | map('string') | list) %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+        {{ ns.names | reject('eq', '') | unique | list }}
+      # The GenAI summary to show: the one rated the biggest potential
+      # threat, or the first camera's if they are rated the same
+      summary_pick: >
+        {{ summaries | sort(attribute='start') | sort(attribute='threat', reverse=true)
+           | first | default({}) }}
+      summary: "{{ summary_pick.meta | default({}) }}"
+
+  - if:
+      - condition: template
+        value_template: "{{ notify_services | count > 0 }}"
+    then:
+      - variables:
+          n_cameras: >
+            {% set ns = namespace(names=[]) %}
+            {% for cam in path %}
+              {% set name = cam | replace('_', ' ') | replace('-', ' ') | title %}
+              {% if input_expand %}
+                {% set name = name | regex_replace('(?i)\\bcam\\b', 'Camera') %}
+              {% endif %}
+              {% set ns.names = ns.names + [name ~ (' Camera' if input_append else '')] %}
+            {% endfor %}
+            {{ ns.names | join(' → ') }}
+          n_group: >
+            {% set name = first_camera | replace('_', ' ') | replace('-', ' ') | title %}
+            {% if input_expand %}
+              {% set name = name | regex_replace('(?i)\\bcam\\b', 'Camera') %}
+            {% endif %}
+            {{ name ~ (' Camera' if input_append else '') }}
+          n_subject: >
+            {% set names = person_names if input_sublabel else [] %}
+            {% set items = names if names else [label | replace('_', ' ')] %}
+            {% if items | count > 1 %}
+              {% set text = items[:-1] | join(', ') ~ ' and ' ~ items[-1] %}
+            {% else %}
+              {% set text = items[0] | default('activity', true) %}
+            {% endif %}
+            {{ text[:1] | upper ~ text[1:] }}
+          n_duration: >
+            {% if gif_url %}
+              {% set start = members | map(attribute='start_time') | min %}
+              {% set end = members | map(attribute='end_time') | reject('none') | list | max | default(start) %}
+              {% set s = (end - start) | round(0) | int %}
+              {{ '%d:%02d' | format(s // 60, s % 60) }}
+            {% endif %}
+          n_threat: "{{ summary.potential_threat_level | default(0, true) | int(0) }}"
+          n_title: >
+            {% if input_title_style == 'cameras' %}{{ n_cameras }}
+            {% elif input_title_style == 'summary' %}
+              {% set t = summary.title | default('', true) or n_subject ~ ' detected' %}
+              {{ ('🚨 ' if n_threat >= 2 else '⚠️ ' if n_threat == 1 else '') ~ t }}
+            {% else %}{{ n_subject }} detected{% endif %}
+          n_message: >
+            {% if input_message_style == 'subject' %}{{ n_subject }} was detected
+            {% elif input_message_style == 'summary'
+                 and summary.shortSummary | default('', true) %}{{ summary.shortSummary }}
+            {% else %}{{ n_cameras }}{{ ' (' ~ n_duration ~ ')' if n_duration else '' }}{% endif %}
+          n_gif_open_url: "{{ base_url ~ gif_url if gif_url else '' }}"
+          n_tap_url: >
+            {% if input_tap_action == 'gif' and n_gif_open_url %}{{ n_gif_open_url }}
+            {% elif input_tap_action in ['gif', 'frigate'] and frigate_review_url %}{{ frigate_review_url }}
+            {% else %}{{ clip_url or frigate_review_url }}{% endif %}
+          n_buttons: >
+            {% set b = [] %}
+            {% if n_gif_open_url and 'gif' in input_buttons %}
+              {% set b = b + [{'action': 'URI', 'title': 'View GIF', 'uri': n_gif_open_url}] %}
+            {% endif %}
+            {% if clip_url and 'clip' in input_buttons %}
+              {% set b = b + [{'action': 'URI', 'title': 'View Clip', 'uri': clip_url}] %}
+            {% endif %}
+            {% if frigate_review_url and 'frigate' in input_buttons %}
+              {% set b = b + [{'action': 'URI', 'title': 'Open in Frigate', 'uri': frigate_review_url}] %}
+            {% endif %}
+            {{ b[:3] }}
+          n_service_data: >
+            {% set image = gif_url or thumbnail_url %}
+            {% set data = {
+                 'tag': journey_id,
+                 'group': n_group,
+                 'channel': n_group ~ ' Notifications',
+                 'timeout': (input_notification_timeout * 60) | int,
+                 'ttl': 0,
+                 'priority': 'high',
+                 'alert_once': true,
+                 'clickAction': n_tap_url,
+                 'url': n_tap_url,
+                 'image': phone_gif_url or image,
+                 'attachment': {'url': image},
+                 'push': {'interruption-level': 'active'},
+                 'actions': n_buttons } %}
+            {% set d = {'message': zero_width_space if input_message_style == 'none' else n_message,
+                        'data': data} %}
+            {{ d if input_title_style == 'none' else dict(d, title=n_title) }}
+      - repeat:
+          for_each: "{{ notify_services }}"
+          sequence:
+            - action: "{{ repeat.item }}"
+              continue_on_error: true
+              data: "{{ n_service_data }}"
+
+  - if:
+      - condition: template
+        value_template: "{{ input_history and gif_url }}"
+    then:
+      - event: frigate_vision_history
+        event_data:
+          id: "{{ journey_id }}"
+          cameras: "{{ path }}"
+          severity: >
+            {{ 'alert' if members | selectattr('severity', 'eq', 'alert') | list
+               else 'detection' }}
+          start: "{{ members | map(attribute='start_time') | min }}"
+          end: >
+            {{ members | map(attribute='end_time') | reject('none') | list
+               | max | default(0) }}
+          objects: >
+            {% set ns = namespace(found=[]) %}
+            {% for m in members %}
+              {% set d = m.data | default({}) %}
+              {% set ns.found = ns.found + d.objects | default([]) + d.audio | default([]) %}
+            {% endfor %}
+            {% set found = ns.found | map('replace', '-verified', '') | unique | list %}
+            {{ [label] + found | reject('eq', label) | list if label else found }}
+          names: "{{ person_names }}"
+          zones: >
+            {{ members | map(attribute='data.zones') | map('default', [])
+               | sum(start=[]) | unique | list }}
+          gif: "{{ gif_url }}"
+          # The journey GIF is deleted after keep_hours (see render_args),
+          # after which the dashboard shows Frigate's GIF instead
+          gif_until: >
+            {% set keep_hours = [48, (input_notification_timeout / 60) | round(0, 'ceil') | int + 1] | max %}
+            {{ now().timestamp() + (keep_hours - 1) * 3600
+               if gif_url != frigate_gif_url else 0 }}
+          gif_fallback: "{{ frigate_gif_url }}"
+          thumbnail: "{{ thumbnail_url | trim }}"
+          clip: "{{ clip_url | trim }}"
+          frigate: "{{ frigate_review_url | trim }}"
+          title: "{{ summary.title | default('', true) }}"
+          summary: "{{ summary.shortSummary | default('', true) }}"
+          scene: "{{ summary.scene | default('', true) }}"
+          observations: >
+            {% set o = summary.observations | default([], true) %}
+            {{ [o] if o is string else o | list }}
+          concerns: >
+            {% set o = summary.other_concerns | default([], true) %}
+            {{ [o] if o is string else o | list }}
+          threat: "{{ summary.potential_threat_level | default(0, true) | int(0) }}"
