@@ -323,7 +323,23 @@ blueprint:
             ON = send a notification with a thumbnail as soon as the journey
             starts, update it as the object reaches more cameras, then with
             the GIF at the end. OFF = stay quiet until the GIF is ready.
+            Ignored with "Single Notification" on.
           default: true
+          selector:
+            boolean: {}
+
+        notify_once:
+          name: Single Notification
+          description: >
+            ON = send nothing until the journey is completely done, then send
+            one notification: the journey GIF, the full camera path and
+            length, and Frigate's GenAI summary. It is the same record the
+            history dashboard gets. This comes 30-90s after the object is
+            gone (Link Gap, Recording Delay, building the GIF, then up to
+            the GenAI Summary Timeout), but it never changes after it
+            arrives. OFF = the notification is sent early and updated as
+            the journey goes on (see "Notify Immediately").
+          default: false
           selector:
             boolean: {}
 
@@ -617,7 +633,10 @@ actions:
       input_camera_labels: !input camera_labels
       input_recording_delay: !input recording_delay
       input_render_timeout: !input render_timeout
-      input_notify_immediately: !input notify_immediately
+      input_notify_once: !input notify_once
+      input_notify_early: !input notify_immediately
+      # Send early and update the notification as the journey goes on
+      input_notify_immediately: "{{ input_notify_early and not input_notify_once }}"
       input_title_style: !input title_style
       input_message_style: !input message_style
       input_genai_timeout: !input genai_timeout
@@ -714,7 +733,10 @@ actions:
 
       first_camera: "{{ review.camera }}"
       first_event_id: "{{ (review.data.detections | default([]) | first) or '' }}"
-      base_url: "{{ input_base_url | trim | regex_replace('/+$', '') }}"
+      # Lower-case the scheme: Android won't open an "Https://" link
+      base_url: >
+        {% set b = input_base_url | trim | regex_replace('/+$', '') %}
+        {{ b.split('://')[0] | lower ~ '://' ~ b.split('://', 1)[1] if '://' in b else b }}
       frigate_gif_url: /api/frigate/notifications/{{ journey_id }}/review_preview.gif
       frigate_api: "{{ input_frigate_api_url | trim | regex_replace('/+$', '') }}"
       thumbnail_url: >
@@ -1125,7 +1147,7 @@ actions:
                 - variables:
                     ended_at: "{{ now().timestamp() if ready else ended_at }}"
                     gif_url: "{{ frigate_gif_url if ready else gif_url }}"
-                    send: "{{ ready }}"
+                    send: "{{ ready and not input_notify_once }}"
                     hold_until: >
                       {{ now().timestamp() + input_recording_delay if ready else last_end_at + 10 }}
                     then_stage: "{{ 'render' if ready else 'ended' }}"
@@ -1227,7 +1249,9 @@ actions:
                               keeping Frigate's GIF of the first camera. The script's log
                               is /config/frigate_vision/jobs/{{ job }}.log
                     - variables:
-                        send: "{{ render_status == 'done' and render_url | length > 0 }}"
+                        send: >
+                          {{ render_status == 'done' and render_url | length > 0
+                             and not input_notify_once }}
                         gif_url: >
                           {{ render_url if render_status == 'done' and render_url else gif_url }}
                         phone_gif_url: >
@@ -1246,12 +1270,15 @@ actions:
                       {{ 'hold' if collect_genai and summaries | count < members | count
                          and now().timestamp() < ended_at + input_genai_timeout else 'finish' }}
 
-            # GIF sent: nothing left to do
+            # Everything is in. With "Single Notification", send it now (on
+            # the next pass), then stop.
             - conditions: "{{ stage == 'finish' }}"
               sequence:
                 - variables:
-                    stage: done
-                    send: false
+                    send: "{{ input_notify_once and not alerted and notify_services | count > 0 }}"
+                    stage: >
+                      {{ 'finish' if input_notify_once and not alerted
+                         and notify_services | count > 0 else 'done' }}
 
           default:
             - variables:
