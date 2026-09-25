@@ -398,7 +398,8 @@ blueprint:
 
             With "Advanced", every camera's review in the journey can get its
             own GenAI summary. The one Frigate rates as the biggest potential
-            threat is used, or the first camera's if they are rated the same.
+            threat is used, or the first camera's if they are rated the same,
+            unless "Combine Summaries with AI" below is set.
           default: cameras
           selector:
             select:
@@ -411,6 +412,33 @@ blueprint:
                   value: summary
                 - label: None
                   value: none
+
+        ai_task:
+          name: Combine Summaries with AI (optional)
+          description: >
+            An AI Task entity (Settings -> Devices & services, e.g. Ollama,
+            OpenAI or Google Generative AI) that combines the GenAI summaries
+            of a journey's cameras into one title, summary and description,
+            in the order things happened and using the recognized names.
+            Only the summaries' text is sent, no images. Used when two or
+            more cameras have a summary; if it fails, the summary Frigate
+            rates as the biggest potential threat is used instead. Leave
+            blank to turn off.
+          default: ""
+          selector:
+            entity:
+              filter:
+                domain: ai_task
+
+        ai_instructions:
+          name: Extra AI Instructions (optional)
+          description: >
+            Anything else the AI should know when combining the summaries,
+            e.g. "Zach is the homeowner. Gerry and Sue are neighbours."
+          default: ""
+          selector:
+            text:
+              multiline: true
 
         buttons:
           name: Action Buttons
@@ -626,6 +654,8 @@ actions:
       input_title_style: !input title_style
       input_message_style: !input message_style
       input_genai_timeout: !input genai_timeout
+      input_ai_task: !input ai_task
+      input_ai_instructions: !input ai_instructions
       use_genai: "{{ 'summary' in [input_title_style, input_message_style] }}"
       input_history: !input history
       # The history records the GenAI summary even when the notification
@@ -1074,7 +1104,144 @@ actions:
       summary_pick: >
         {{ summaries | sort(attribute='start') | sort(attribute='threat', reverse=true)
            | first | default({}) }}
-      summary: "{{ summary_pick.meta | default({}) }}"
+      # Set by the AI Task below, if it's used
+      ai_combined: {}
+
+  # Optionally have an AI Task combine the cameras' GenAI summaries into one,
+  # in the order things happened. Only their text is sent. If it fails, the
+  # summary picked above is used.
+  - if:
+      - condition: template
+        value_template: >
+          {{ input_ai_task not in ['', none] and collect_genai and summaries | count > 1 }}
+    then:
+      - variables:
+          ai_response: {}
+          ai_prompt: >
+            {% set names = person_names %}
+            {% set rules = [
+                 'You are writing one home security notification for an event that several cameras saw, one after another. Below is the AI summary of each camera\'s footage, in the order they happened. Combine them into one account of the whole event, from start to finish.',
+                 '',
+                 'Rules:',
+                 '- Use only what the summaries say. Do not add details, guess at intentions, or mention cameras, footage, summaries or AI. Places (the driveway, the front door) are fine.',
+                 '- Treat it as one continuous event: the same ' ~ (label | replace('_', ' ') or 'subject') ~ ' moving from place to place, unless the summaries clearly describe more than one.',
+                 '- Face recognition identified: ' ~ names | join(', ') ~ '. Call them by name, even where a summary says "unidentified person".'
+                   if names else
+                 '- Nobody was recognized. Refer to people generically (e.g. "a person"), never as "unidentified" or "unknown".',
+                 '- title: a short headline, under 8 words.',
+                 '- summary: 1-2 sentences, under 40 words.',
+                 '- scene: a short paragraph describing what happened, in order.'] %}
+            {% if input_ai_instructions | trim %}
+              {% set rules = rules + ['', 'Additional context:', input_ai_instructions | trim] %}
+            {% endif %}
+            {% set ns = namespace(parts=[rules | join('\n')]) %}
+            {% set first = summaries | map(attribute='start') | min %}
+            {% for s in summaries | sort(attribute='start') %}
+              {% set m = members | selectattr('id', 'eq', s.id) | first | default({}) %}
+              {% set cam = m.camera | default('') | replace('_', ' ') | replace('-', ' ') | title %}
+              {% set secs = (s.start - first) | round(0) | int %}
+              {% set c = namespace(lines=['Camera ' ~ loop.index ~ ': ' ~ cam
+                   ~ ' (' ~ '%d:%02d' | format(secs // 60, secs % 60) ~ ' into the event)']) %}
+              {% for key, heading in [('title', 'Title'), ('shortSummary', 'Summary'), ('scene', 'Details')] %}
+                {% if s.meta[key] | default('', true) is string and s.meta[key] | default('', true) %}
+                  {% set c.lines = c.lines + [heading ~ ': ' ~ s.meta[key]] %}
+                {% endif %}
+              {% endfor %}
+              {% for key, heading in [('observations', 'Observations'), ('other_concerns', 'Concerns')] %}
+                {% set items = s.meta[key] | default([], true) %}
+                {% set items = [items] if items is string else items %}
+                {% if items %}
+                  {% set c.lines = c.lines + [heading ~ ':'] + (items | map('regex_replace', '^', '- ') | list) %}
+                {% endif %}
+              {% endfor %}
+              {% set ns.parts = ns.parts + [c.lines | join('\n')] %}
+            {% endfor %}
+            {{ ns.parts | join('\n\n') }}
+      - action: ai_task.generate_data
+        continue_on_error: true
+        data:
+          task_name: Frigate Vision journey summary
+          entity_id: "{{ input_ai_task }}"
+          instructions: "{{ ai_prompt }}"
+          structure:
+            title:
+              description: A short headline for the whole event, under 8 words.
+              required: true
+              selector:
+                text:
+            summary:
+              description: What happened from start to finish, in 1-2 sentences under 40 words.
+              required: true
+              selector:
+                text:
+            scene:
+              description: A short paragraph describing what happened, in order.
+              required: false
+              selector:
+                text:
+                  multiline: true
+        response_variable: ai_response
+      - variables:
+          ai_combined: >
+            {% set d = ai_response.data | default({}) %}
+            {{ d if d is mapping and d.title | default('', true) is string
+                    and d.title | default('', true) and d.summary | default('', true) is string
+                    and d.summary | default('', true) else {} }}
+
+  - variables:
+      # Frigate's GenAI calls anyone it didn't recognize on its camera an
+      # "unidentified person", even when they were recognized on another.
+      # Use the recognized name instead, or just "person" if there isn't one.
+      summary: >
+        {%- macro clean(t, names) -%}
+          {%- set adj = '(?:unidentified|unknown|unrecogni[sz]ed|unfamiliar)' -%}
+          {%- set nouns = ['person', 'people', 'individual', 'individuals', 'man', 'men',
+               'woman', 'women', 'figure', 'figures', 'visitor', 'visitors'] -%}
+          {%- set noun = '(?:' ~ nouns | join('|') ~ ')' -%}
+          {%- set ns = namespace(t=t | string) -%}
+          {%- if names | count == 1 and names[0] | lower not in ns.t | lower -%}
+            {%- set ns.t = ns.t | regex_replace('\\b(?:(?:an?|the|one) )?' ~ adj
+                 ~ ' (?:person|individual|man|woman|figure|visitor)\\b',
+                 names[0] | replace('\\', '\\\\'), true) -%}
+          {%- endif -%}
+          {%- set ns.t = ns.t | regex_replace('\\b(a)n ' ~ adj ~ ' (?=' ~ noun ~ '\\b)', '\\1 ', true) -%}
+          {%- for n in nouns -%}
+            {%- set ns.t = ns.t | regex_replace('\\b(?:Unidentified|Unknown|Unrecogni[sz]ed|Unfamiliar) '
+                 ~ n ~ '\\b', n | capitalize) -%}
+          {%- endfor -%}
+          {{- ns.t | regex_replace('\\b' ~ adj ~ ' (?=' ~ noun ~ '\\b)', '', true) -}}
+        {%- endmacro -%}
+        {% set meta = summary_pick.meta | default({}) %}
+        {% if ai_combined %}
+          {% set ns = namespace(observations=[], concerns=[]) %}
+          {% for m in summaries | sort(attribute='start') | map(attribute='meta') %}
+            {% set o = m.observations | default([], true) %}
+            {% set ns.observations = ns.observations + ([o] if o is string else o | list) %}
+            {% set o = m.other_concerns | default([], true) %}
+            {% set ns.concerns = ns.concerns + ([o] if o is string else o | list) %}
+          {% endfor %}
+          {% set meta = {
+               'title': ai_combined.title,
+               'shortSummary': ai_combined.summary,
+               'scene': ai_combined.scene | default('', true) if ai_combined.scene | default('', true) is string else '',
+               'observations': ns.observations | unique | list,
+               'other_concerns': ns.concerns | unique | list,
+               'potential_threat_level': summaries | map(attribute='threat') | max } %}
+        {% endif %}
+        {% set ns = namespace(d={}) %}
+        {% for key, value in (meta if meta is mapping else {}).items() %}
+          {% if value is string %}
+            {% set value = clean(value, person_names) %}
+          {% elif key in ['observations', 'other_concerns'] and value is iterable and value is not mapping %}
+            {% set items = namespace(list=[]) %}
+            {% for item in value %}
+              {% set items.list = items.list + [clean(item, person_names) if item is string else item] %}
+            {% endfor %}
+            {% set value = items.list %}
+          {% endif %}
+          {% set ns.d = dict(ns.d, **{key: value}) %}
+        {% endfor %}
+        {{ ns.d }}
 
   - if:
       - condition: template

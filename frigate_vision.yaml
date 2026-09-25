@@ -584,6 +584,45 @@ actions:
           value_template: "{{ stage == 'done' }}"
       sequence:
 
+        # Frigate's GenAI calls anyone it didn't recognize an "unidentified
+        # person", even when Frigate recognized them later on. Use the
+        # recognized name instead, or just "person" if there isn't one.
+        - variables:
+            genai: >
+              {%- macro clean(t, names) -%}
+                {%- set adj = '(?:unidentified|unknown|unrecogni[sz]ed|unfamiliar)' -%}
+                {%- set nouns = ['person', 'people', 'individual', 'individuals', 'man', 'men',
+                     'woman', 'women', 'figure', 'figures', 'visitor', 'visitors'] -%}
+                {%- set noun = '(?:' ~ nouns | join('|') ~ ')' -%}
+                {%- set ns = namespace(t=t | string) -%}
+                {%- if names | count == 1 and names[0] | lower not in ns.t | lower -%}
+                  {%- set ns.t = ns.t | regex_replace('\\b(?:(?:an?|the|one) )?' ~ adj
+                       ~ ' (?:person|individual|man|woman|figure|visitor)\\b',
+                       names[0] | replace('\\', '\\\\'), true) -%}
+                {%- endif -%}
+                {%- set ns.t = ns.t | regex_replace('\\b(a)n ' ~ adj ~ ' (?=' ~ noun ~ '\\b)', '\\1 ', true) -%}
+                {%- for n in nouns -%}
+                  {%- set ns.t = ns.t | regex_replace('\\b(?:Unidentified|Unknown|Unrecogni[sz]ed|Unfamiliar) '
+                       ~ n ~ '\\b', n | capitalize) -%}
+                {%- endfor -%}
+                {{- ns.t | regex_replace('\\b' ~ adj ~ ' (?=' ~ noun ~ '\\b)', '', true) -}}
+              {%- endmacro -%}
+              {% set ns = namespace(d={}) %}
+              {% for key, value in (genai if genai is mapping else {}).items() %}
+                {% if value is string %}
+                  {% set value = clean(value, person_names) %}
+                {% elif key in ['observations', 'other_concerns'] and value is iterable and value is not mapping %}
+                  {% set items = namespace(list=[]) %}
+                  {% for item in value %}
+                    {% set items.list = items.list + [clean(item, person_names) if item is string else item] %}
+                  {% endfor %}
+                  {% set value = items.list %}
+                {% endif %}
+                {% set ns.d = dict(ns.d, **{key: value}) %}
+              {% endfor %}
+              {{ ns.d }}
+            summary: "{{ genai if input_genai_summary else {} }}"
+
         - if:
             - condition: template
               value_template: "{{ send and notify_services | count > 0 }}"
