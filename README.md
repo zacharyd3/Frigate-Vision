@@ -66,7 +66,7 @@ A second blueprint, **FrigateVision - Multi-Camera Journeys** (`frigate_vision_m
 
 **How it links cameras.** Reviews are part of the same journey when they are for the same kind of object (person, car, dog...) and each one starts while the previous one is still going, or within the *Link Gap* (20s by default) after it ends. If both reviews have recognized names (faces, plates), the names must match. A dog in the back yard doesn't join a person walking to the front door. A journey that stays on one camera simply gets a one-camera GIF, so use this blueprint *instead of* the regular one for the cameras you add to it.
 
-**How the GIF is cut.** The GIF always shows the camera that most recently picked the object up. When the next camera sees it, the GIF hard-cuts to that camera. If that camera loses it while an earlier one still sees it, the GIF cuts back. Stretches where no camera saw anything are skipped. Each camera's name is shown in the corner.
+**How the GIF is cut.** The GIF always shows the camera that most recently picked the object up. When the next camera sees it, the GIF hard-cuts to that camera. That includes walking back to a camera that is still recording from earlier: the GIF cuts back as soon as that camera picks the object up again. If the newest camera loses it while an earlier one still sees it, the GIF cuts back. Stretches where no camera saw anything are skipped. Each camera's name is shown in the corner.
 
 **Portrait and landscape cameras.** With *Frame Shape* on *Auto*, the GIF follows the cameras in each journey:
 * all portrait (e.g. doorbell or hallway cameras): portrait GIF
