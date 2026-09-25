@@ -116,6 +116,28 @@ views:
                    'deer', 'fox', 'raccoon', 'squirrel', 'rabbit', 'skunk', 'goat',
                    'kangaroo', 'elephant', 'zebra', 'giraffe', 'bark'] -%}
 
+              {#- Frigate's GenAI calls anyone it didn't recognize an "unidentified
+                  person", even when they were recognized later or on another camera.
+                  Use the recognized name instead, or just "person" if there isn't one. -#}
+              {%- macro clean(t, names) -%}
+                {%- set adj = '(?:unidentified|unknown|unrecogni[sz]ed|unfamiliar)' -%}
+                {%- set nouns = ['person', 'people', 'individual', 'individuals', 'man', 'men',
+                     'woman', 'women', 'figure', 'figures', 'visitor', 'visitors'] -%}
+                {%- set noun = '(?:' ~ nouns | join('|') ~ ')' -%}
+                {%- set ns = namespace(t=t | string) -%}
+                {%- if names | count == 1 and names[0] | lower not in ns.t | lower -%}
+                  {%- set ns.t = ns.t | regex_replace('\\b(?:(?:an?|the|one) )?' ~ adj
+                       ~ ' (?:person|individual|man|woman|figure|visitor)\\b',
+                       names[0] | replace('\\', '\\\\'), true) -%}
+                {%- endif -%}
+                {%- set ns.t = ns.t | regex_replace('\\b(a)n ' ~ adj ~ ' (?=' ~ noun ~ '\\b)', '\\1 ', true) -%}
+                {%- for n in nouns -%}
+                  {%- set ns.t = ns.t | regex_replace('\\b(?:Unidentified|Unknown|Unrecogni[sz]ed|Unfamiliar) '
+                       ~ n ~ '\\b', n | capitalize) -%}
+                {%- endfor -%}
+                {{- ns.t | regex_replace('\\b' ~ adj ~ ' (?=' ~ noun ~ '\\b)', '', true) -}}
+              {%- endmacro -%}
+
               {%- set camera = states('select.frigate_vision_camera') -%}
               {%- set show = states('input_select.frigate_vision_show') -%}
               {%- set today = now().strftime('%Y-%m-%d') -%}
@@ -168,7 +190,7 @@ views:
                     {%- set subject = items | first | default('activity', true) -%}
                   {%- endif -%}
                   {%- set subject = subject[:1] | upper ~ subject[1:] -%}
-                  {%- set title = e.title | default('', true) or subject ~ ' detected' -%}
+                  {%- set title = clean(e.title, names) if e.title else subject ~ ' detected' -%}
 
                   {%- set duration = '' -%}
                   {%- if e.end | default(0) | float(0) > 0 -%}
@@ -181,8 +203,17 @@ views:
                   {%- set gif = e.gif if not e.gif_until | default(0) or now().timestamp() < e.gif_until
                        else e.gif_fallback | default(e.gif, true) -%}
 
-                  {%- set observations = e.observations | default([]) -%}
-                  {%- set concerns = e.concerns | default([]) -%}
+                  {%- set summary = clean(e.summary, names) if e.summary else '' -%}
+                  {%- set scene = clean(e.scene, names) if e.scene else '' -%}
+                  {%- set lists = namespace(observations=[], concerns=[]) -%}
+                  {%- for o in e.observations | default([]) -%}
+                    {%- set lists.observations = lists.observations + [clean(o, names)] -%}
+                  {%- endfor -%}
+                  {%- for c in e.concerns | default([]) -%}
+                    {%- set lists.concerns = lists.concerns + [clean(c, names)] -%}
+                  {%- endfor -%}
+                  {%- set observations = lists.observations -%}
+                  {%- set concerns = lists.concerns -%}
 
                   <div>
                   <h3>{{ '🚨 ' if threat >= 2 else '⚠️ ' if threat == 1 }}{{ title | e }}</h3>
@@ -192,10 +223,10 @@ views:
                   {%- if e.title and names %}<br>👤 {{ names | join(', ') | e }}{% endif %}
                   {%- if e.zones %}<br>📍 {{ e.zones | map('replace', '_', ' ') | map('title') | join(', ') | e }}{% endif -%}
                   </p>
-                  {%- if e.summary %}<p>{{ e.summary | e }}</p>{% endif -%}
-                  {%- if e.scene or observations -%}
+                  {%- if summary %}<p>{{ summary | e }}</p>{% endif -%}
+                  {%- if scene or observations -%}
                     <details{{ ' open' if ns.count == 1 }}><summary>Details</summary>
-                    {%- if e.scene %}<p>{{ e.scene | e | replace('\n', '<br>') }}</p>{% endif -%}
+                    {%- if scene %}<p>{{ scene | e | replace('\n', '<br>') }}</p>{% endif -%}
                     {%- if observations -%}
                       <ul>{% for o in observations %}<li>{{ o | e }}</li>{% endfor %}</ul>
                     {%- endif -%}

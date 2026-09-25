@@ -1074,7 +1074,43 @@ actions:
       summary_pick: >
         {{ summaries | sort(attribute='start') | sort(attribute='threat', reverse=true)
            | first | default({}) }}
-      summary: "{{ summary_pick.meta | default({}) }}"
+      # Frigate's GenAI calls anyone it didn't recognize on its camera an
+      # "unidentified person", even when they were recognized on another.
+      # Use the recognized name instead, or just "person" if there isn't one.
+      summary: >
+        {%- macro clean(t, names) -%}
+          {%- set adj = '(?:unidentified|unknown|unrecogni[sz]ed|unfamiliar)' -%}
+          {%- set nouns = ['person', 'people', 'individual', 'individuals', 'man', 'men',
+               'woman', 'women', 'figure', 'figures', 'visitor', 'visitors'] -%}
+          {%- set noun = '(?:' ~ nouns | join('|') ~ ')' -%}
+          {%- set ns = namespace(t=t | string) -%}
+          {%- if names | count == 1 and names[0] | lower not in ns.t | lower -%}
+            {%- set ns.t = ns.t | regex_replace('\\b(?:(?:an?|the|one) )?' ~ adj
+                 ~ ' (?:person|individual|man|woman|figure|visitor)\\b',
+                 names[0] | replace('\\', '\\\\'), true) -%}
+          {%- endif -%}
+          {%- set ns.t = ns.t | regex_replace('\\b(a)n ' ~ adj ~ ' (?=' ~ noun ~ '\\b)', '\\1 ', true) -%}
+          {%- for n in nouns -%}
+            {%- set ns.t = ns.t | regex_replace('\\b(?:Unidentified|Unknown|Unrecogni[sz]ed|Unfamiliar) '
+                 ~ n ~ '\\b', n | capitalize) -%}
+          {%- endfor -%}
+          {{- ns.t | regex_replace('\\b' ~ adj ~ ' (?=' ~ noun ~ '\\b)', '', true) -}}
+        {%- endmacro -%}
+        {% set meta = summary_pick.meta | default({}) %}
+        {% set ns = namespace(d={}) %}
+        {% for key, value in (meta if meta is mapping else {}).items() %}
+          {% if value is string %}
+            {% set value = clean(value, person_names) %}
+          {% elif key in ['observations', 'other_concerns'] and value is iterable and value is not mapping %}
+            {% set items = namespace(list=[]) %}
+            {% for item in value %}
+              {% set items.list = items.list + [clean(item, person_names) if item is string else item] %}
+            {% endfor %}
+            {% set value = items.list %}
+          {% endif %}
+          {% set ns.d = dict(ns.d, **{key: value}) %}
+        {% endfor %}
+        {{ ns.d }}
 
   - if:
       - condition: template

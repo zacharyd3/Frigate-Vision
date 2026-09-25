@@ -31,6 +31,7 @@ Every update replaces the same notification, and only the first one makes a soun
 * **Multiple cameras**: each review gets its own run, so simultaneous activity on different cameras produces separate notifications
 * **Filters** for review severity (alert/detection), labels and zones. A review that later upgrades to an alert or enters a zone still triggers, and a review that was in a zone at any point counts.
 * **Recognized names for people only**: names from face recognition are shown, while names Frigate gives other objects (like known license plates on cars) are left out
+* **No "unidentified person"**: when Frigate's GenAI calls someone an *unidentified person* but Frigate recognized them (later on, or on another camera), their name is used instead; if nobody was recognized, it just says *person*
 * **Cooldown** between new notifications
 * **Multiple notification devices**, grouped and channelled per camera, so the camera name shows in the notification group
 * **Notification title and text, set separately**: title *Basic* (camera name), *Advanced* (Frigate's GenAI title) or *None*; text *Basic* (e.g. *"Zach was detected"*), *Advanced* (Frigate's GenAI short summary) or *None*. Mix them, e.g. the camera name as the title with the GenAI summary as the text, or set both to *None* for the biggest image
