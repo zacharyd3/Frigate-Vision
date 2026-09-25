@@ -254,6 +254,24 @@ blueprint:
               unit_of_measurement: seconds
               mode: slider
 
+        phone_gif_mb:
+          name: Notification GIF Limit (MB)
+          description: >
+            Android plays the notification GIF in the notification shade, and
+            drops the whole notification (leaving just an empty "Home
+            Assistant" group header) if the GIF is too big to load. A journey
+            GIF bigger than this, or bigger than 480px, gets a smaller copy
+            for the Android notification image. "View GIF", the tap action
+            and the history dashboard still open the full GIF.
+          default: 2
+          selector:
+            number:
+              min: 0.5
+              max: 10
+              step: 0.5
+              unit_of_measurement: MB
+              mode: box
+
         camera_labels:
           name: Camera Names in GIF
           description: >
@@ -595,6 +613,7 @@ actions:
       input_gif_fps: !input gif_fps
       input_gif_speed: !input gif_speed
       input_gif_max_length: !input gif_max_length
+      input_phone_gif_mb: !input phone_gif_mb
       input_camera_labels: !input camera_labels
       input_recording_delay: !input recording_delay
       input_render_timeout: !input render_timeout
@@ -715,6 +734,8 @@ actions:
       stage: active
       send: "{{ input_notify_immediately }}"
       gif_url: ""
+      # Smaller copy of the journey GIF for the Android notification image
+      phone_gif_url: ""
       alerted: false
       shown_cameras: []
       shown_names: []
@@ -727,6 +748,7 @@ actions:
       job: ""
       render_status: skipped
       render_url: ""
+      render_phone_url: ""
       render_error: ""
       render_deadline: 0
       recorded: ""
@@ -847,7 +869,7 @@ actions:
                        'alert_once': true,
                        'clickAction': n_tap_url,
                        'url': n_tap_url,
-                       'image': image,
+                       'image': phone_gif_url or image,
                        'attachment': {'url': image},
                        'push': {'interruption-level': 'passive' if alerted else 'active'},
                        'actions': n_buttons } %}
@@ -1121,6 +1143,7 @@ actions:
                       background={{ input_gif_background }}
                       fps={{ input_gif_fps | int }} speed={{ input_gif_speed }}
                       max_length={{ input_gif_max_length }}
+                      phone_mb={{ input_phone_gif_mb }}
                       pre={{ input_pre_padding }} post={{ input_post_padding }}
                       labels={{ 1 if input_camera_labels else 0 }}
                       keep_hours={{ [48, (input_notification_timeout / 60) | round(0, 'ceil') | int + 1] | max }}
@@ -1173,6 +1196,9 @@ actions:
                         render_url: >
                           {{ status_response.stdout | default('')
                              | regex_findall('"url": "([^"]+)"') | first | default('') }}
+                        render_phone_url: >
+                          {{ status_response.stdout | default('')
+                             | regex_findall('"phone_url": "([^"]+)"') | first | default('') }}
                         render_error: >
                           {{ status_response.stdout | default('')
                              | regex_findall('"error": "([^"]*)"') | first | default('') }}
@@ -1204,6 +1230,8 @@ actions:
                         send: "{{ render_status == 'done' and render_url | length > 0 }}"
                         gif_url: >
                           {{ render_url if render_status == 'done' and render_url else gif_url }}
+                        phone_gif_url: >
+                          {{ render_phone_url if render_status == 'done' and render_url else '' }}
                         stage: summary
 
             # GIF sent: with a GenAI title or text, keep waiting for the
