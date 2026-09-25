@@ -35,6 +35,7 @@ Every update replaces the same notification, and only the first one makes a soun
 * **Multiple notification devices**, grouped and channelled per camera, so the camera name shows in the notification group
 * **Notification title and text, set separately**: title *Basic* (camera name), *Advanced* (Frigate's GenAI title) or *None*; text *Basic* (e.g. *"Zach was detected"*), *Advanced* (Frigate's GenAI short summary) or *None*. Mix them, e.g. the camera name as the title with the GenAI summary as the text, or set both to *None* for the biggest image
 * **Actions**: *Summary* (full GenAI description), *View Clip* (through Home Assistant) and *Open in Frigate* (links straight to the review)
+* **History dashboard** for your phone: every event's GIF and GenAI summary, filterable by camera and type (see [History Dashboard](#-history-dashboard))
 
 ---
 
@@ -100,6 +101,42 @@ Frigate only makes GIFs of one review on one camera, so the journey GIF is built
 * **Where the GIFs live:** in `/config/www/frigate_vision/`. They are deleted after 48 hours, or after the notification timeout if that's longer. Like everything under `/local/`, they can be opened without logging in by anyone who can reach your Home Assistant and knows the file name. The names include a random part, so they can't be guessed.
 * **Troubleshooting:** each GIF has a log in `/config/frigate_vision/jobs/`, named in the Home Assistant log warning. If the warning says it can't reach Frigate, check the **Frigate URL (from Home Assistant)** input: it must be a full address such as `http://192.168.1.50:5000`.
 * **Not in this version (yet):** zone filters, the *Summary* button with GenAI's full description, and pulling in a camera's review from *before* the journey started (e.g. a car on the street "detection" before the person at the door "alert"). Add *Detection* to *Review Severity* if you want those to start a journey.
+
+---
+
+### 📱 History Dashboard
+
+A dashboard of recent camera events, made for the Home Assistant app on a phone. Each event shows its GIF, what was detected (and who), the cameras, time, length and zones, and Frigate's GenAI title, short summary and full details with any concerns flagged. The GenAI summary is recorded **even if your notifications don't use it**. Filter by camera or by *Alerts*, *People*, *Vehicles*, *Animals* or *Potential threats*. A line at the top sums up today: how many events and alerts, who was seen, and which cameras were busy.
+
+Both blueprints record to it. It keeps the last 40 events and survives restarts.
+
+#### Setup (one time)
+
+1. Copy [`dashboard/frigate_vision_history.yaml`](dashboard/frigate_vision_history.yaml) to `/config/packages/frigate_vision_history.yaml`. It creates the history sensor, the two filters and a *Clear History* script.
+2. If you don't use packages yet, add this to `configuration.yaml`:
+   ```yaml
+   homeassistant:
+     packages: !include_dir_named packages
+   ```
+3. *(Optional)* The history is too big for the recorder, which logs a warning about it. To silence the warning, add this to `configuration.yaml` (merge it into your `recorder:` section if you already have one):
+   ```yaml
+   recorder:
+     exclude:
+       entities:
+         - sensor.frigate_vision_history
+   ```
+4. Restart Home Assistant.
+5. **Settings → Dashboards → Add Dashboard → New dashboard from scratch**, open it, then **✏️ → ⋮ → Raw configuration editor**, and paste in [`dashboard/frigate_vision_dashboard.yaml`](dashboard/frigate_vision_dashboard.yaml).
+
+*Record History* (under Advanced Options, on by default) must be on in your Frigate Vision automations. Events show up once their GIF is ready and update when the GenAI summary comes in.
+
+#### Good to know
+
+* **Only built-in cards are used.** With [card-mod](https://github.com/thomasloven/lovelace-card-mod) installed (HACS), GIFs get rounded corners and portrait GIFs never get taller than the screen.
+* **GIFs load as you scroll**, so opening the dashboard on mobile data only loads what's on screen. Frigate builds each GIF when it's requested, so a long feed can take a moment.
+* **How far back GIFs go** depends on Frigate. They are built from Frigate's previews, which are kept as long as your recordings. A journey's own GIF is deleted after 48 hours. After that the dashboard shows Frigate's GIF of the first camera instead.
+* **Settings** (how many events to show, 12 or 24-hour times, which objects count as vehicles or animals) are at the top of the feed card's template. To keep more than 40 events, change `keep` in the package.
+* **GenAI summaries** need Frigate 0.17+ with GenAI review summaries enabled. If your notifications don't use them (*Use Frigate GenAI Summary* off, or a journey without an *Advanced* title or text), the automation still waits up to the *GenAI Summary Timeout* for the summary, just for the dashboard. The notification doesn't change.
 
 ---
 

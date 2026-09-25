@@ -322,6 +322,18 @@ blueprint:
               unit_of_measurement: seconds
               mode: slider
 
+        history:
+          name: Record History (for the dashboard)
+          description: >
+            Record each review, with its GIF and Frigate's GenAI summary, for
+            the Frigate Vision history dashboard (see the README for its
+            one-time setup). The GenAI summary is recorded even when the
+            notification doesn't use it. Does nothing if the dashboard isn't
+            set up.
+          default: true
+          selector:
+            boolean: {}
+
 # ---------------------------------------------------------------------------
 # Each Frigate review item gets its own run, so several cameras can be active
 # at once. Every message on the reviews topic is evaluated, but a run only
@@ -409,6 +421,10 @@ actions:
       input_gif_delay: !input gif_delay
       input_genai_timeout: !input genai_timeout
       input_mqtt_topic: !input mqtt_topic
+      input_history: !input history
+      # The history records the GenAI summary even when the notification
+      # doesn't use it
+      want_genai: "{{ input_genai_summary or input_history }}"
 
       # Frigate's tracked object topic, used to tell which recognized names
       # (sub labels) belong to people
@@ -553,7 +569,10 @@ actions:
       show_gif: false
       show_summary: false
       alerted: false
+      # Frigate's GenAI summary, and the part of it the notification uses
+      genai: {}
       summary: {}
+      recorded: ""
 
   # ── Notification loop ──────────────────────────────────────────────────────
   # Each pass (1) sends/updates the notification if `send` is set, then
@@ -672,6 +691,44 @@ actions:
             - variables:
                 alerted: true
 
+        # Record the review for the history dashboard once its GIF is ready,
+        # and again when Frigate's GenAI summary comes in
+        - if:
+            - condition: template
+              value_template: >
+                {{ input_history and show_gif
+                   and recorded != ('genai' if genai else 'gif') }}
+          then:
+            - event: frigate_vision_history
+              event_data:
+                id: "{{ review_id }}"
+                cameras: "{{ [camera] }}"
+                severity: "{{ review.severity | default('') }}"
+                start: "{{ review.start_time | float(0) }}"
+                end: "{{ review.end_time | float(0) }}"
+                objects: >
+                  {% set d = review.data | default({}) %}
+                  {{ (d.objects | default([]) + d.audio | default([]))
+                     | map('replace', '-verified', '') | unique | list }}
+                names: "{{ person_names }}"
+                zones: "{{ review.data.zones | default([]) | unique | list }}"
+                gif: "{{ gif_url }}"
+                thumbnail: "{{ thumbnail_url | trim }}"
+                clip: "{{ clip_url | trim }}"
+                frigate: "{{ frigate_review_url | trim }}"
+                title: "{{ genai.title | default('', true) }}"
+                summary: "{{ genai.shortSummary | default('', true) }}"
+                scene: "{{ genai.scene | default('', true) }}"
+                observations: >
+                  {% set o = genai.observations | default([], true) %}
+                  {{ [o] if o is string else o | list }}
+                concerns: >
+                  {% set o = genai.other_concerns | default([], true) %}
+                  {{ [o] if o is string else o | list }}
+                threat: "{{ genai.potential_threat_level | default(0, true) | int(0) }}"
+            - variables:
+                recorded: "{{ 'genai' if genai else 'gif' }}"
+
         - choose:
 
             # Review in progress: follow updates until Frigate ends it, and
@@ -737,7 +794,7 @@ actions:
                     gif_ready_at: "{{ now().timestamp() + input_gif_delay }}"
                 - if:
                     - condition: template
-                      value_template: "{{ input_genai_summary and input_gif_delay > 0 }}"
+                      value_template: "{{ want_genai and input_gif_delay > 0 }}"
                   then:
                     - wait_for_trigger:
                         - trigger: mqtt
@@ -752,8 +809,9 @@ actions:
                           value_template: "{{ wait.trigger is not none }}"
                       then:
                         - variables:
-                            summary: >
+                            genai: >
                               {{ wait.trigger.payload_json.after.data.metadata | default({}, true) }}
+                            summary: "{{ genai if input_genai_summary else {} }}"
                         - delay:
                             seconds: "{{ [gif_ready_at - now().timestamp(), 0] | max }}"
                   else:
@@ -763,7 +821,7 @@ actions:
                     show_gif: true
                     send: true
                     stage: >
-                      {{ 'summary' if input_genai_summary and not summary else 'finish' }}
+                      {{ 'summary' if want_genai and not genai else 'finish' }}
 
             # GIF sent: wait a while longer for Frigate's GenAI summary
             - conditions: "{{ stage == 'summary' }}"
@@ -777,9 +835,10 @@ actions:
                     seconds: "{{ input_genai_timeout }}"
                   continue_on_timeout: true
                 - variables:
-                    summary: >
+                    genai: >
                       {{ wait.trigger.payload_json.after.data.metadata | default({}, true)
                          if wait.trigger else {} }}
+                    summary: "{{ genai if input_genai_summary else {} }}"
                     send: "{{ summary | count > 0 }}"
                     stage: finish
 

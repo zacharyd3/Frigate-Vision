@@ -1,0 +1,222 @@
+# Frigate Vision - History dashboard
+#
+# Needs the history package (frigate_vision_history.yaml) and "Record History"
+# turned on in the Frigate Vision blueprints (it is by default).
+#
+# To use: Settings -> Dashboards -> Add Dashboard -> New dashboard from
+# scratch, open it, then the pencil -> three dots -> Raw configuration editor,
+# and replace everything with this file. To add it to an existing dashboard
+# instead, paste the view (from "- title: Camera History" down) under its
+# views:.
+#
+# Uses only built-in cards. With card-mod installed (HACS), the GIFs get
+# rounded corners and portrait GIFs are kept from getting taller than the
+# screen; without it the card_mod sections are ignored.
+
+title: Camera History
+views:
+  - title: Camera History
+    path: camera-history
+    icon: mdi:cctv
+    type: sections
+    max_columns: 1
+    sections:
+      - type: grid
+        cards:
+
+          - type: heading
+            heading: Camera History
+            heading_style: title
+            icon: mdi:cctv
+            badges:
+              # When the latest event started, e.g. "5 minutes ago"
+              - type: entity
+                entity: sensor.frigate_vision_history
+                show_icon: true
+                show_state: true
+                tap_action:
+                  action: none
+              - type: entity
+                entity: script.frigate_vision_clear_history
+                show_icon: true
+                show_state: false
+                tap_action:
+                  action: perform-action
+                  perform_action: script.frigate_vision_clear_history
+                  confirmation:
+                    text: Clear the camera history? GIFs and clips stay in Frigate.
+
+          # Today at a glance
+          - type: markdown
+            text_only: true
+            content: >-
+              {%- set events = state_attr('sensor.frigate_vision_history', 'events') or [] -%}
+              {%- set today = events | selectattr('start', 'ge', today_at().timestamp()) | list -%}
+              {%- if today -%}
+                {%- set alerts = today | selectattr('severity', 'eq', 'alert') | list | count -%}
+                {%- set flagged = today | selectattr('threat', 'gt', 0) | list | count -%}
+                {%- set names = today | map(attribute='names') | map('default', [])
+                     | sum(start=[]) | unique | list -%}
+                {%- set cams = today | map(attribute='cameras') | map('default', [])
+                     | sum(start=[]) | list -%}
+                **Today:** {{ today | count }} event{{ 's' if today | count != 1 }}
+                · {{ alerts }} alert{{ 's' if alerts != 1 }}
+                {{- ' · ⚠️ ' ~ flagged ~ ' flagged' if flagged }}
+                {%- if names %}<br>**Seen:** {{ names | join(', ') }}{% endif %}
+                <br>{% for c in cams | unique | sort -%}
+                  {{ c | replace('_', ' ') | replace('-', ' ') | title }} {{ cams | select('eq', c) | list | count }}
+                  {{- ' · ' if not loop.last }}
+                {%- endfor -%}
+              {%- else -%}
+                No camera events today.
+              {%- endif -%}
+
+          # Filters
+          - type: tile
+            entity: select.frigate_vision_camera
+            name: Camera
+            hide_state: true
+            features:
+              - type: select-options
+            grid_options:
+              columns: 6
+          - type: tile
+            entity: input_select.frigate_vision_show
+            name: Show
+            hide_state: true
+            features:
+              - type: select-options
+            grid_options:
+              columns: 6
+
+          # The history
+          - type: markdown
+            card_mod:
+              style:
+                ha-markdown$: |
+                  img {
+                    display: block;
+                    width: 100%;
+                    max-height: 65vh;
+                    object-fit: contain;
+                    border-radius: 12px;
+                    background: #000;
+                  }
+                  h2 { margin: 20px 0 4px; }
+                  h3 { margin: 12px 0 8px; }
+                  details summary { color: var(--primary-color); cursor: pointer; }
+                  details[open] summary { margin-bottom: 8px; }
+            content: |-
+              {#- Settings -#}
+              {%- set limit = 25 -%}
+              {%- set time_format = '%-I:%M %p' -%}{#- '%H:%M' for a 24-hour clock -#}
+              {%- set vehicles = ['car', 'motorcycle', 'bicycle', 'bus', 'truck', 'boat',
+                   'airplane', 'train', 'license_plate'] -%}
+              {%- set animals = ['bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'bear',
+                   'deer', 'fox', 'raccoon', 'squirrel', 'rabbit', 'skunk', 'goat',
+                   'kangaroo', 'elephant', 'zebra', 'giraffe', 'bark'] -%}
+
+              {%- set camera = states('select.frigate_vision_camera') -%}
+              {%- set show = states('input_select.frigate_vision_show') -%}
+              {%- set today = now().strftime('%Y-%m-%d') -%}
+              {%- set yesterday = (now() - timedelta(days=1)).strftime('%Y-%m-%d') -%}
+              {%- set events = state_attr('sensor.frigate_vision_history', 'events') or [] -%}
+              {%- set ns = namespace(count=0, day='') -%}
+
+              {%- for e in events -%}
+                {%- set cams = e.cameras | default([]) | map('replace', '_', ' ')
+                     | map('replace', '-', ' ') | map('title') | list -%}
+                {%- set objects = e.objects | default([]) | map('lower') | list -%}
+                {%- set names = e.names | default([]) -%}
+                {%- set threat = e.threat | default(0) | int(0) -%}
+
+                {%- set camera_ok = camera in cams
+                     or camera in ['All cameras', '', 'unknown', 'unavailable'] -%}
+                {%- if show == 'Alerts' -%}
+                  {%- set show_ok = e.severity == 'alert' -%}
+                {%- elif show == 'People' -%}
+                  {%- set show_ok = 'person' in objects or names | count > 0 -%}
+                {%- elif show == 'Vehicles' -%}
+                  {%- set show_ok = objects | select('in', vehicles) | list | count > 0 -%}
+                {%- elif show == 'Animals' -%}
+                  {%- set show_ok = objects | select('in', animals) | list | count > 0 -%}
+                {%- elif show == 'Potential threats' -%}
+                  {%- set show_ok = threat > 0 -%}
+                {%- else -%}
+                  {%- set show_ok = true -%}
+                {%- endif -%}
+
+                {%- if camera_ok and show_ok and ns.count < limit -%}
+                  {%- set ns.count = ns.count + 1 -%}
+
+                  {#- Day heading, or a divider between events on the same day -#}
+                  {%- set day = e.start | timestamp_custom('%Y-%m-%d') -%}
+                  {%- if day != ns.day -%}
+                    {%- set ns.day = day -%}
+                    <h2>{{ 'Today' if day == today else 'Yesterday' if day == yesterday
+                           else e.start | timestamp_custom('%A, %B %-d') }}</h2>
+                  {%- else -%}
+                    <hr>
+                  {%- endif -%}
+
+                  {#- "Zach detected" / "Person and car detected" -#}
+                  {%- set items = names if names
+                       else objects | map('replace', '_', ' ') | unique | list -%}
+                  {%- if items | count > 1 -%}
+                    {%- set subject = items[:-1] | join(', ') ~ ' and ' ~ items[-1] -%}
+                  {%- else -%}
+                    {%- set subject = items | first | default('activity', true) -%}
+                  {%- endif -%}
+                  {%- set subject = subject[:1] | upper ~ subject[1:] -%}
+                  {%- set title = e.title | default('', true) or subject ~ ' detected' -%}
+
+                  {%- set duration = '' -%}
+                  {%- if e.end | default(0) | float(0) > 0 -%}
+                    {%- set s = (e.end - e.start) | round(0) | int -%}
+                    {%- set duration = '%d:%02d' | format(s // 60, s % 60) -%}
+                  {%- endif -%}
+
+                  {#- A journey's own GIF is deleted after a couple of days; fall back
+                      to Frigate's GIF of the first camera after that -#}
+                  {%- set gif = e.gif if not e.gif_until | default(0) or now().timestamp() < e.gif_until
+                       else e.gif_fallback | default(e.gif, true) -%}
+
+                  {%- set observations = e.observations | default([]) -%}
+                  {%- set concerns = e.concerns | default([]) -%}
+
+                  <div>
+                  <h3>{{ '🚨 ' if threat >= 2 else '⚠️ ' if threat == 1 }}{{ title | e }}</h3>
+                  <img src="{{ gif | e }}" alt="{{ subject | e }}" width="100%" loading="lazy">
+                  <p><b>{{ cams | join(' → ') | e }}</b> · {{ e.start | timestamp_custom(time_format) }}
+                  {{- ' · ' ~ duration if duration }} · {{ 'Alert' if e.severity == 'alert' else 'Detection' }}
+                  {%- if e.title and names %}<br>👤 {{ names | join(', ') | e }}{% endif %}
+                  {%- if e.zones %}<br>📍 {{ e.zones | map('replace', '_', ' ') | map('title') | join(', ') | e }}{% endif -%}
+                  </p>
+                  {%- if e.summary %}<p>{{ e.summary | e }}</p>{% endif -%}
+                  {%- if e.scene or observations -%}
+                    <details{{ ' open' if ns.count == 1 }}><summary>Details</summary>
+                    {%- if e.scene %}<p>{{ e.scene | e | replace('\n', '<br>') }}</p>{% endif -%}
+                    {%- if observations -%}
+                      <ul>{% for o in observations %}<li>{{ o | e }}</li>{% endfor %}</ul>
+                    {%- endif -%}
+                    </details>
+                  {%- endif -%}
+                  {%- for c in concerns -%}
+                    <ha-alert alert-type="warning">{{ c | e }}</ha-alert>
+                  {%- endfor -%}
+                  {%- set links = [] -%}
+                  {%- if e.clip %}{% set links = links + ['<a href="' ~ e.clip | e ~ '" target="_blank">▶️ Clip</a>'] %}{% endif -%}
+                  {%- set links = links + ['<a href="' ~ gif | e ~ '" target="_blank">🔍 Full size</a>'] -%}
+                  {%- if e.frigate %}{% set links = links + ['<a href="' ~ e.frigate | e ~ '" target="_blank">Open in Frigate</a>'] %}{% endif -%}
+                  <p>{{ links | join(' · ') }}</p>
+                  </div>
+                {%- endif -%}
+              {%- endfor -%}
+
+              {%- if ns.count == 0 -%}
+                {%- if events -%}
+                  Nothing matches these filters.
+                {%- else -%}
+                  No events yet. Reviews show up here once their GIF is ready.
+                {%- endif -%}
+              {%- endif -%}
