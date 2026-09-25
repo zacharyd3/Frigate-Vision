@@ -220,7 +220,7 @@ views:
                   {%- endfor -%}
                   {%- set observations = lists.observations -%}
                   {%- set concerns = lists.concerns -%}
-                  {#- The cameras' own summaries, when an AI Task combined them -#}
+                  {#- The cameras' own summaries, when an AI Task summarized them -#}
                   {%- set sources = e.sources | default([]) -%}
 
                   <div>
