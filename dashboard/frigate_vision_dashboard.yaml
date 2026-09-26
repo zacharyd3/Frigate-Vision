@@ -370,7 +370,8 @@ views:
                     text-decoration: none;
                     white-space: nowrap;
                   }
-                  footer a:first-child {
+                  footer a:first-child,
+                  footer a:has(ha-icon[icon="mdi:play"]) {
                     background: var(--primary-color);
                     color: var(--text-primary-color, #fff);
                   }
@@ -516,7 +517,6 @@ views:
                   {#- Each camera's own GenAI summary. Recorded for journeys an AI Task
                       summarized, or that more than one camera summarized -#}
                   {%- set sources = e.sources | default([]) -%}
-                  {%- set ai = e.ai if e.ai is defined else sources | count > 0 -%}
 
                   <article>
 
@@ -549,23 +549,12 @@ views:
                   </nav></header>
 
                   {%- if summary %}<p>{{ summary | e }}</p>{% endif -%}
-                  {%- if ai -%}
-                    {#- Written by the AI Task: its description is the main text, and
-                        the cameras' observations are with their summaries below -#}
-                    {%- if scene %}<p>{{ scene | e | replace('\n', '<br>') }}</p>{% endif -%}
-                  {%- elif scene or observations -%}
-                    <details{{ ' open' if ns.count == 1 }}><summary>Details</summary>
-                    {%- if scene %}<p>{{ scene | e | replace('\n', '<br>') }}</p>{% endif -%}
-                    {%- if observations -%}
-                      <ul>{% for o in observations %}<li>{{ o | e }}</li>{% endfor %}</ul>
-                    {%- endif -%}
-                    </details>
-                  {%- endif -%}
+                  {%- if scene %}<p>{{ scene | e | replace('\n', '<br>') }}</p>{% endif -%}
                   {%- for c in concerns -%}
                     <ha-alert alert-type="warning">{{ c | e }}</ha-alert>
                   {%- endfor -%}
                   {%- if sources -%}
-                    <details><summary>Camera summaries ({{ sources | count }})</summary>
+                    <details><summary>Frigate GenAI summaries ({{ sources | count }})</summary>
                     {%- for s in sources -%}
                       {%- set t = s.threat | default(0) | int(0) -%}
                       <h4>{{ '🚨 ' if t >= 2 else '⚠️ ' if t == 1 }}{{ s.camera | replace('_', ' ') | replace('-', ' ') | title | e }}
@@ -580,12 +569,28 @@ views:
                       {%- endif -%}
                     {%- endfor -%}
                     </details>
+                  {%- elif observations -%}
+                    {#- Older records only kept the cameras' observations -#}
+                    <details><summary>Frigate GenAI observations ({{ observations | count }})</summary>
+                    <ul>{% for o in observations %}<li>{{ o | e }}</li>{% endfor %}</ul>
+                    </details>
                   {%- endif -%}
+
+                  {#- A clip per camera for journeys; older records have just the first -#}
+                  {%- set clips = e.clips | default([]) -%}
 
                   {#- Action buttons; the first one is filled -#}
                   <footer>
-                  {%- if e.clip -%}
-                    <a href="{{ e.clip | e }}" target="_blank"><ha-icon icon="mdi:play"></ha-icon>Clip</a>
+                  {%- if clips | count > 1 -%}
+                    {%- for c in clips -%}
+                      {%- set name = c.camera | replace('_', ' ') | replace('-', ' ') | title -%}
+                      {%- if clips | selectattr('camera', 'eq', c.camera) | list | count > 1 -%}
+                        {%- set name = name ~ ' ' ~ c.start | timestamp_custom(time_format) -%}
+                      {%- endif -%}
+                      <a href="{{ c.url | e }}" target="_blank"><ha-icon icon="mdi:play"></ha-icon>{{ name | e }}</a>
+                    {%- endfor -%}
+                  {%- elif clips or e.clip -%}
+                    <a href="{{ (clips[0].url if clips else e.clip) | e }}" target="_blank"><ha-icon icon="mdi:play"></ha-icon>Clip</a>
                   {%- endif -%}
                   <a href="{{ gif | e }}" target="_blank"><ha-icon icon="mdi:arrow-expand"></ha-icon>Full size</a>
                   {%- if e.frigate -%}
