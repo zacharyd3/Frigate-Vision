@@ -446,8 +446,16 @@ blueprint:
         buttons:
           name: Action Buttons
           description: >
-            Buttons to show on the notification (Android shows at most 3).
-            "View Clip" and "Open in Frigate" open the first camera's review.
+            Buttons to show on the notification, in the order picked. Android
+            shows the first 3, iOS shows them all when the notification is
+            long-pressed. "View Clip", "View Snapshot" and "Open in Frigate"
+            open the first camera's review. "View Live" opens the last camera
+            the object reached, live in Frigate (with the External Frigate
+            URL) or, without it, in Home Assistant (Android only). "Open
+            Dashboard" opens the
+            Dashboard Path below (e.g. the history dashboard). "Snooze" stops
+            notifications from this automation for the Snooze Length below
+            (needs a Snooze Timer). "Custom" uses the Custom Button below.
           default: [gif, clip, frigate]
           selector:
             select:
@@ -458,8 +466,76 @@ blueprint:
                   value: gif
                 - label: View Clip
                   value: clip
+                - label: View Snapshot
+                  value: snapshot
+                - label: View Live
+                  value: live
                 - label: Open in Frigate (needs the External Frigate URL)
                   value: frigate
+                - label: Open Dashboard (needs the Dashboard Path)
+                  value: dashboard
+                - label: Snooze (needs a Snooze Timer)
+                  value: snooze
+                - label: Custom (needs the Custom Button)
+                  value: custom
+
+        dashboard_path:
+          name: Dashboard Path
+          description: >
+            The dashboard the "Open Dashboard" button (and Tap Action) opens:
+            the end of its address in the browser, e.g.
+            /dashboard-cameras/camera-history for the history dashboard. A
+            path opens inside the companion app; a full https:// address
+            opens in the browser.
+          default: ""
+          selector:
+            text: {}
+
+        snooze_timer:
+          name: Snooze Timer
+          description: >
+            A timer helper (Settings -> Devices & services -> Helpers -> Create
+            helper -> Timer, with "Restore" on so it survives restarts) used by
+            the "Snooze" button. While it's running, journeys are still
+            followed and recorded to the history dashboard, but no
+            notifications are sent, to any device. Several automations can
+            share one timer to snooze them together.
+          default: ""
+          selector:
+            entity:
+              filter:
+                domain: timer
+
+        snooze_length:
+          name: Snooze Length (minutes)
+          description: How long the "Snooze" button stops notifications for.
+          default: 30
+          selector:
+            number:
+              min: 1
+              max: 1440
+              step: 1
+              unit_of_measurement: minutes
+              mode: box
+
+        custom_button_title:
+          name: Custom Button Title
+          description: The "Custom" button's label, e.g. "Unlock Door".
+          default: ""
+          selector:
+            text: {}
+
+        custom_button_uri:
+          name: Custom Button Link
+          description: >
+            What the "Custom" button opens: a dashboard path (e.g.
+            /lovelace/doors), a full https:// address, or anything else the
+            companion app accepts, like "entityId:lock.front_door" to show an
+            entity (Android) or "app://com.example.app" to open an app
+            (Android).
+          default: ""
+          selector:
+            text: {}
 
         sublabel:
           name: Show Recognized Names
@@ -497,6 +573,12 @@ blueprint:
                   value: frigate
                 - label: Event clip
                   value: clip
+                - label: Snapshot
+                  value: snapshot
+                - label: Live view of the last camera
+                  value: live
+                - label: Dashboard (needs the Dashboard Path)
+                  value: dashboard
 
         notification_timeout:
           name: Notification Timeout (minutes)
@@ -581,6 +663,10 @@ max_exceeded: silent
 triggers:
   - trigger: mqtt
     topic: !input mqtt_topic
+  # The notification's Snooze button
+  - trigger: event
+    event_type: mobile_app_notification_action
+    id: snooze
 
 variables:
   input_cameras: !input cameras
@@ -617,6 +703,9 @@ variables:
       {{ false }}
     {% endif %}
 
+  # The Snooze button's action, unique to this automation
+  snooze_action: "FRIGATE_VISION_MULTICAM_SNOOZE_{{ this.entity_id }}"
+
   cooldown_seconds: >
     {{ (input_cooldown.days | default(0)) * 86400
        + (input_cooldown.hours | default(0)) * 3600
@@ -624,19 +713,46 @@ variables:
        + (input_cooldown.seconds | default(0)) }}
 
 conditions:
-  - alias: At least one label is selected
-    condition: template
-    value_template: "{{ labels | count > 0 }}"
-  - condition: template
-    value_template: "{{ should_start }}"
-  - alias: Cooldown since the last notification
-    condition: template
-    value_template: >
-      {{ cooldown_seconds == 0
-         or this.attributes.last_triggered is none
-         or now().timestamp() - as_timestamp(this.attributes.last_triggered, 0) >= cooldown_seconds }}
+  - condition: or
+    conditions:
+      - alias: Snooze button pressed
+        condition: template
+        value_template: >
+          {{ trigger.id == 'snooze'
+             and trigger.event.data.action | default('') == snooze_action }}
+      - condition: and
+        conditions:
+          - alias: At least one label is selected
+            condition: template
+            value_template: "{{ labels | count > 0 }}"
+          - condition: template
+            value_template: "{{ should_start }}"
+          - alias: Cooldown since the last notification
+            condition: template
+            value_template: >
+              {{ cooldown_seconds == 0
+                 or this.attributes.last_triggered is none
+                 or now().timestamp() - as_timestamp(this.attributes.last_triggered, 0) >= cooldown_seconds }}
 
 actions:
+  # ── Snooze button ──────────────────────────────────────────────────────────
+  - if:
+      - condition: template
+        value_template: "{{ trigger.id == 'snooze' }}"
+    then:
+      - variables:
+          input_snooze_timer: !input snooze_timer
+          input_snooze_length: !input snooze_length
+      - if:
+          - condition: template
+            value_template: "{{ input_snooze_timer != '' }}"
+        then:
+          - action: timer.start
+            target:
+              entity_id: "{{ input_snooze_timer }}"
+            data:
+              duration: "{{ (input_snooze_length * 60) | int }}"
+      - stop: Snoozed
 
   # ── Resolve inputs ─────────────────────────────────────────────────────────
   - variables:
@@ -669,6 +785,11 @@ actions:
       input_append: !input append
       input_expand: !input expand
       input_tap_action: !input tap_action
+      input_dashboard_path: !input dashboard_path
+      input_snooze_timer: !input snooze_timer
+      input_snooze_length: !input snooze_length
+      input_custom_button_title: !input custom_button_title
+      input_custom_button_uri: !input custom_button_uri
       input_notification_timeout: !input notification_timeout
       input_base_url: !input base_url
       input_frigate_url: !input frigate_url
@@ -764,6 +885,12 @@ actions:
         {% else %}/api/frigate/notifications/{{ journey_id }}/{{ first_camera }}/review_thumbnail.webp{% endif %}
       clip_url: >
         {% if first_event_id %}{{ base_url }}/api/frigate/notifications/{{ first_event_id }}/{{ first_camera }}/clip.mp4{% endif %}
+      snapshot_url: >
+        {% if first_event_id %}{{ base_url }}/api/frigate/notifications/{{ first_event_id }}/snapshot.jpg{% endif %}
+      # Paths open inside the companion app, full addresses in the browser
+      dashboard_url: >
+        {% set d = input_dashboard_path | trim %}
+        {{ d if '://' in d or not d else '/' ~ d.lstrip('/') }}
       frigate_review_url: >
         {% set f = input_frigate_url | trim | regex_replace('/+$', '') %}
         {% if f %}{{ f }}/review?id={{ journey_id }}{% endif %}
@@ -1251,9 +1378,12 @@ actions:
         {% endfor %}
         {{ ns.d }}
 
+  # Not while snoozed (the journey is still recorded below)
   - if:
       - condition: template
-        value_template: "{{ notify_services | count > 0 }}"
+        value_template: >
+          {{ notify_services | count > 0
+             and not (input_snooze_timer and is_state(input_snooze_timer, 'active')) }}
     then:
       - variables:
           n_cameras: >
@@ -1301,22 +1431,43 @@ actions:
                  and summary.shortSummary | default('', true) %}{{ summary.shortSummary }}
             {% else %}{{ n_cameras }}{{ ' (' ~ n_duration ~ ')' if n_duration else '' }}{% endif %}
           n_gif_open_url: "{{ base_url ~ gif_url if gif_url else '' }}"
+          # The live view of the last camera the object reached: in Frigate
+          # if its URL is set, otherwise the camera in Home Assistant
+          n_live_url: >
+            {% set cam = path | last | default(first_camera, true) %}
+            {% set f = input_frigate_url | trim | regex_replace('/+$', '') %}
+            {% if f %}{{ f }}/#{{ cam }}
+            {% else %}entityId:camera.{{ cam | lower | replace('-', '_') }}{% endif %}
           n_tap_url: >
             {% if input_tap_action == 'gif' and n_gif_open_url %}{{ n_gif_open_url }}
-            {% elif input_tap_action in ['gif', 'frigate'] and frigate_review_url %}{{ frigate_review_url }}
+            {% elif input_tap_action == 'snapshot' and snapshot_url %}{{ snapshot_url }}
+            {% elif input_tap_action == 'live' %}{{ n_live_url }}
+            {% elif input_tap_action == 'dashboard' and dashboard_url %}{{ dashboard_url }}
+            {% elif input_tap_action in ['gif', 'frigate', 'dashboard'] and frigate_review_url %}{{ frigate_review_url }}
             {% else %}{{ clip_url or frigate_review_url }}{% endif %}
+          # In the order picked, leaving out any that have nothing to open
           n_buttons: >
-            {% set b = [] %}
-            {% if n_gif_open_url and 'gif' in input_buttons %}
-              {% set b = b + [{'action': 'URI', 'title': 'View GIF', 'uri': n_gif_open_url}] %}
-            {% endif %}
-            {% if clip_url and 'clip' in input_buttons %}
-              {% set b = b + [{'action': 'URI', 'title': 'View Clip', 'uri': clip_url}] %}
-            {% endif %}
-            {% if frigate_review_url and 'frigate' in input_buttons %}
-              {% set b = b + [{'action': 'URI', 'title': 'Open in Frigate', 'uri': frigate_review_url}] %}
-            {% endif %}
-            {{ b[:3] }}
+            {% set available = {
+                 'gif': {'action': 'URI', 'title': 'View GIF', 'uri': n_gif_open_url},
+                 'clip': {'action': 'URI', 'title': 'View Clip', 'uri': clip_url},
+                 'snapshot': {'action': 'URI', 'title': 'View Snapshot', 'uri': snapshot_url},
+                 'live': {'action': 'URI', 'title': 'View Live', 'uri': n_live_url},
+                 'frigate': {'action': 'URI', 'title': 'Open in Frigate', 'uri': frigate_review_url},
+                 'dashboard': {'action': 'URI', 'title': 'Open Dashboard', 'uri': dashboard_url},
+                 'snooze': {'action': snooze_action if input_snooze_timer else '',
+                            'title': 'Snooze ' ~ (input_snooze_length | int) ~ ' min', 'uri': ''},
+                 'custom': {'action': 'URI', 'title': input_custom_button_title | trim,
+                            'uri': input_custom_button_uri | trim} } %}
+            {% set ns = namespace(buttons=[]) %}
+            {% for key in input_buttons if key in available %}
+              {% set b = available[key] %}
+              {% if b.action == 'URI' and b.uri | trim and b.title %}
+                {% set ns.buttons = ns.buttons + [{'action': 'URI', 'title': b.title, 'uri': b.uri | trim}] %}
+              {% elif b.action and b.action != 'URI' %}
+                {% set ns.buttons = ns.buttons + [{'action': b.action, 'title': b.title}] %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.buttons }}
           n_service_data: >
             {% set image = gif_url or thumbnail_url %}
             {% set data = {
