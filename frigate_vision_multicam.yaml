@@ -350,7 +350,10 @@ blueprint:
 
         post_padding:
           name: Lead-out (seconds)
-          description: Seconds of recording to show after each camera loses the object.
+          description: >
+            Seconds of recording to show after a camera loses the object. If
+            another camera still sees it, the GIF cuts straight to that camera
+            instead.
           default: 2
           selector:
             number:
