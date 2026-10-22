@@ -73,6 +73,8 @@ DEFAULTS = {
 
 # Pieces of the same camera less than this far apart come from one download
 MERGE_GAP = 30.0
+# Seconds a camera that picks the object up is shown for, at least
+MIN_SHOW = 1.0
 # Recordings downloaded at the same time
 PARALLEL_DOWNLOADS = 3
 
@@ -123,10 +125,13 @@ def build_timeline(reviews, pre, post):
     the camera that most recently picked the object up is shown, so the GIF
     hard-cuts to the next camera as soon as it sees the object, and falls
     back to a camera that still sees it if the newer one loses it first.
-    A camera that picks the object up again partway through its review
-    (a new detection) counts as the newest from then on, so walking back to
-    it cuts back straight away. Stretches where no camera saw anything are
-    skipped.
+    The `post` seconds of lead-out after a camera loses the object only play
+    while no other camera still sees it, so that fallback is immediate (a
+    camera is still shown for at least MIN_SHOW, so a brief glimpse isn't
+    lost). A camera that picks the object up again partway through its
+    review (a new detection) counts as the newest from then on, so walking
+    back to it cuts back straight away. Stretches where no camera saw
+    anything are skipped.
     """
     reviews = sorted(reviews, key=lambda r: r["start"])
     windows = []
@@ -134,17 +139,20 @@ def build_timeline(reviews, pre, post):
         covered = any(
             o is not r and o["start"] < r["start"] <= o["end"] + post for o in reviews
         )
+        end = r["end"] + post
         windows.append(
             {
                 "camera": r["camera"],
                 "seen": [r["start"]]
                 + sorted(t for t in r.get("seen", []) if r["start"] < t < r["end"]),
                 "start": r["start"] if covered else r["start"] - pre,
-                "end": r["end"] + post,
+                # Until then the camera counts as seeing the object
+                "live": min(max(r["end"], r["start"] + MIN_SHOW), end),
+                "end": end,
             }
         )
 
-    bounds = sorted({w["start"] for w in windows} | {w["end"] for w in windows}
+    bounds = sorted({w[k] for w in windows for k in ("start", "live", "end")}
                     | {t for w in windows for t in w["seen"]})
     pieces = []
     for a, b in zip(bounds, bounds[1:]):
@@ -152,7 +160,9 @@ def build_timeline(reviews, pre, post):
         active = [w for w in windows if w["start"] <= mid < w["end"]]
         if not active:
             continue
-        camera = max(active, key=lambda w: last_seen(w, mid))["camera"]
+        # A camera's lead-out gives way to any camera that still sees it
+        seeing = [w for w in active if mid < w["live"]] or active
+        camera = max(seeing, key=lambda w: last_seen(w, mid))["camera"]
         if pieces and pieces[-1]["camera"] == camera and abs(pieces[-1]["end"] - a) < 1e-6:
             pieces[-1]["end"] = b
         else:
