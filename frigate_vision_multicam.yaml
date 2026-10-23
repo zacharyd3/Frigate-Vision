@@ -16,7 +16,9 @@ blueprint:
     same kind of object (person, car, dog...) and each one starts within the
     Link Gap of the previous one ending. A journey that stays on one camera
     gets a one-camera GIF, so use this instead of the regular Frigate Vision
-    blueprint for these cameras.
+    blueprint for these cameras. Follow-only cameras (e.g. a street camera)
+    never start a journey, but one that's going still follows the object
+    onto them.
 
 
     Needs a one-time setup: copy frigate_vision_multicam.py to
@@ -38,8 +40,10 @@ blueprint:
     cameras:
       name: Frigate Cameras
       description: >
-        Frigate camera entities to follow objects across. A journey can move
-        between any of these cameras.
+        Frigate camera entities to follow objects across. A journey can start
+        on any of these cameras and move between them. To follow objects onto
+        a camera that shouldn't start a journey, like a street camera, add it
+        to Follow-Only Cameras (under Filters) instead.
       selector:
         entity:
           domain: [camera]
@@ -58,6 +62,23 @@ blueprint:
       icon: mdi:filter
       collapsed: true
       input:
+        follow_cameras:
+          name: Follow-Only Cameras
+          description: >
+            Cameras that never start a journey (and never notify on their
+            own), but that a journey still follows the object onto, e.g. a
+            street camera: someone walking from the front door to the street
+            stays in the journey, but people just walking past don't start
+            one. A follow-only camera only joins while the object is on one of
+            the Frigate Cameras above, or within the Link Gap after it leaves
+            one, so a busy street can't keep a journey going by itself. A
+            camera in both lists is follow-only.
+          default: []
+          selector:
+            entity:
+              domain: [camera]
+              multiple: true
+
         severity:
           name: Review Severity
           description: >
@@ -673,12 +694,17 @@ triggers:
 
 variables:
   input_cameras: !input cameras
+  input_follow_cameras: !input follow_cameras
   input_severity: !input severity
   input_labels: !input labels
   input_cooldown: !input cooldown
 
+  # Cameras that can join a journey but not start one
+  follow_cameras: >
+    {{ input_follow_cameras | map('replace', 'camera.', '') | list }}
+  # Cameras that can start a journey
   watched_cameras: >
-    {{ input_cameras | map('replace', 'camera.', '') | list }}
+    {{ input_cameras | map('replace', 'camera.', '') | reject('in', follow_cameras) | list }}
   # The Labels checklist in its own order, which decides what a journey
   # follows when a review has more than one of them. Labels saved from
   # before it was a checklist go last.
@@ -978,14 +1004,28 @@ actions:
                             {% set d = r.data | default({}) %}
                             {% set found = (d.objects | default([]) + d.audio | default([]))
                                  | map('replace', '-verified', '') | map('lower') | list %}
-                            {% set cam_ok = (r.camera | default('') | lower | replace('-', '_')) in watched_cameras %}
+                            {% set cam = r.camera | default('') | lower | replace('-', '_') %}
+                            {% set follow_only = cam in follow_cameras %}
+                            {% set cam_ok = cam in watched_cameras or follow_only %}
                             {% set sev_ok = input_link_detections or r.severity | default('') in input_severity %}
                             {% set first_start = members | map(attribute='start_time') | min %}
                             {% set last_end = members | map(attribute='end_time') | reject('none') | list | max | default(first_start) %}
+                            {# A follow-only camera only links to the cameras that can
+                               start a journey, so a busy street can't keep it going #}
+                            {% set lead = namespace(active=any_active, end=last_end) %}
+                            {% if follow_only %}
+                              {% set lead.active = false %}
+                              {% set lead.end = first_start %}
+                              {% for m in members
+                                   if (m.camera | default('') | lower | replace('-', '_')) not in follow_cameras %}
+                                {% if m.end_time is none %}{% set lead.active = true %}
+                                {% else %}{% set lead.end = [lead.end, m.end_time] | max %}{% endif %}
+                              {% endfor %}
+                            {% endif %}
                             {% set start = r.start_time | float(0) %}
                             {% set time_ok = start >= first_start - input_link_gap
                                  and start <= first_start + max_journey_seconds
-                                 and (any_active or start <= last_end + input_link_gap) %}
+                                 and (lead.active or start <= lead.end + input_link_gap) %}
                             {% set names = members | map(attribute='data.sub_labels') | map('default', [])
                                  | sum(start=[]) | map('string') | reject('eq', '') | list %}
                             {% set r_names = d.sub_labels | default([]) | map('string') | reject('eq', '') | list %}
