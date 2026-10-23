@@ -15,10 +15,9 @@ blueprint:
     Reviews on your cameras are linked into one journey when they are for the
     same kind of object (person, car, dog...) and each one starts within the
     Link Gap of the previous one ending. A journey that stays on one camera
-    gets a one-camera GIF, so use this instead of the regular Frigate Vision
-    blueprint for these cameras. Follow-only cameras (e.g. a street camera)
-    never start a journey, but one that's going still follows the object
-    onto them.
+    gets a one-camera GIF, so it works for a single camera too. Follow-only
+    cameras (e.g. a street camera) never start a journey, but one that's
+    going still follows the object onto them.
 
 
     Needs a one-time setup: copy frigate_vision_multicam.py to

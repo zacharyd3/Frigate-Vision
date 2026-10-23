@@ -1,7 +1,7 @@
 # Frigate Vision - History
 #
-# Keeps the last reviews (and journeys) recorded by the Frigate Vision
-# blueprints, for the history dashboard in frigate_vision_dashboard.yaml.
+# Keeps the last journeys recorded by the Frigate Vision blueprint, for the
+# history dashboard in frigate_vision_dashboard.yaml.
 #
 # Install as a package: save this file as /config/packages/frigate_vision_history.yaml
 # and make sure configuration.yaml has
