@@ -942,6 +942,10 @@ actions:
       genai_known: false
       genai_reviews: []
       genai_expected: []
+      # The objects each camera's reviews always include when they move,
+      # read from Frigate's config by the script ("<camera>=person,car ..."),
+      # so the AI Task knows a car missing from a review didn't move
+      watched_objects: ""
       hold_until: 0
       then_stage: ""
       ended_at: 0
@@ -1168,6 +1172,9 @@ actions:
                     genai_reviews: >
                       {{ (render_response.stdout | default('')
                           | regex_findall('"genai": "([^"]*)"') | first | default('')).split() }}
+                    watched_objects: >
+                      {{ render_response.stdout | default('')
+                         | regex_findall('"watched": "([^"]*)"') | first | default('') }}
                     render_deadline: "{{ now().timestamp() + input_render_timeout }}"
                     hold_until: "{{ now().timestamp() + 3 }}"
                     then_stage: poll
@@ -1314,6 +1321,32 @@ actions:
             {% set several = timeline | count > 1 %}
             {% set one = label | replace('_', ' ') or 'subject' %}
             {% set many = 'people' if one == 'person' else one ~ 's' %}
+            {% set w = namespace(d={}) %}
+            {% for item in (watched_objects | default('', true) | string).split() %}
+              {% set kv = item.split('=', 1) %}
+              {% if kv | count == 2 %}
+                {% set w.d = dict(w.d, **{kv[0]: kv[1].split(',')}) %}
+              {% endif %}
+            {% endfor %}
+            {# The route (a place it went back to is a second visit), and the
+               vehicles each summarised place watches that didn't move there.
+               Only vehicles: Frigate reliably sees one move, and a summary can
+               take headlights coming on for driving, but it can miss a small
+               animal at night. #}
+            {% set pre = namespace(places=[], route=[], still=[]) %}
+            {% for m in timeline %}
+              {% set here = place(m.camera | default('')) %}
+              {% set moved = (m.data | default({})).objects | default([], true)
+                   | map('replace', '-verified', '') | list %}
+              {% set summarised = summaries | selectattr('id', 'eq', m.id) | list | count > 0 %}
+              {% set pre.still = pre.still + [w.d.get(m.camera | default(''), [])
+                   | select('in', ['car', 'truck', 'bus', 'motorcycle']) | reject('in', moved) | list
+                   if summarised else []] %}
+              {% set pre.route = pre.route + [('back to ' if here in pre.places else '') ~ here] %}
+              {% set pre.places = pre.places + [here] %}
+            {% endfor %}
+            {% set still_rule = ['- Where it says "No car moved here" (or truck, bus, motorcycle), none did: if that place\'s summary says one drove in, pulled up, drove off or moved, it was really parked the whole time (headlights coming on can look like driving).']
+                 if pre.still | select | list else [] %}
             {% set rules = (
                  ['You are writing one home security notification for one event, seen by cameras in different places around a property. Below is a timeline of where it was seen, in the order it happened, with times from the start of the event and the AI summary of what was seen in each place. Combine it into one account of the whole event, from start to finish.',
                   '',
@@ -1321,12 +1354,15 @@ actions:
                   '- Use only what the timeline says. Do not add details, guess at intentions, or mention cameras, footage, summaries or AI. Places (the driveway, the front door) are fine.',
                   '- It is one event: the same ' ~ one ~ ' or ' ~ many ~ ' moving from place to place, not new ones in each place, even where a summary only mentions some of them or only what they have with them. Two ' ~ many ~ ' in one place and then two in the next are the same two, not four. Say how many there were as the most seen at once in any one place, never a total across places, and only say one arrived or left if a summary clearly says so.',
                   '- Anything a summary mentions with them (a dog on a leash, a bag they carry) is part of the same event: tie it to them, not as something separate.',
-                  '- Tell it in the order of the timeline. A place seen "while still at" another overlaps it in time: describe the two together, not as separate visits. Use the times to put things in order and to link places (then, moments later, meanwhile), but do not quote them.']
+                  '- Each summary only saw its own place. Someone who "disappears", "exits the frame" or "is no longer visible" there just went out of its view, on to the next place in the timeline: never say they disappeared or vanished.',
+                  '- Tell it in the order of the timeline. A place seen "while still at" another overlaps it in time: describe the two together, not as separate visits. Use the times to put things in order and to link places (then, moments later, meanwhile), but do not quote them.',
+                  '- The route is the order they went in. A place they went back to is a second visit: tell each visit in its turn, and keep what was seen on each visit with that visit (a bag seen only on the way back was not there on the way out).']
                    if several else
                  ['You are writing one home security notification for an event a camera saw. Below is the AI summary of its footage. Rewrite it as the notification.',
                   '',
                   'Rules:',
                   '- Use only what the summary says. Do not add details, guess at intentions, or mention cameras, footage, summaries or AI. Places (the driveway, the front door) are fine.'])
+               + still_rule
                + ['- Face recognition identified: ' ~ names | join(', ') ~ '. Call them by name, even where a summary says "unidentified person"'
                    ~ (', and anyone else "another person".' if one == 'person' else '.')
                    if names else
@@ -1338,6 +1374,9 @@ actions:
               {% set rules = rules + ['', 'Additional context:', input_ai_instructions | trim] %}
             {% endif %}
             {% set ns = namespace(parts=[rules | join('\n')], seen=[]) %}
+            {% if several %}
+              {% set ns.parts = ns.parts + ['Route: ' ~ pre.route | join(' → ')] %}
+            {% endif %}
             {% set first = timeline | map(attribute='start_time') | min %}
             {% for m in timeline %}
               {% set start = m.start_time | float(0) %}
@@ -1366,6 +1405,7 @@ actions:
               {% endif %}
               {% set ns.seen = ns.seen + [{'place': here, 'end': end}] %}
               {% set c = namespace(lines=[(loop.index ~ '. ' if several else '') ~ here
+                   ~ (' again' if here in pre.places[:loop.index0] else '')
                    ~ (' (' ~ clock(start - first) ~ ' to ' ~ clock(end - first) ~ ')'
                       if m.end_time is not none else ' (from ' ~ clock(start - first) ~ ')')
                    ~ when]) %}
@@ -1377,6 +1417,9 @@ actions:
                    | map('replace', '_', ' ') | unique | list %}
               {% if found %}
                 {% set c.lines = c.lines + ['Detected here: ' ~ found | join(', ')] %}
+              {% endif %}
+              {% if pre.still[loop.index0] %}
+                {% set c.lines = c.lines + ['No ' ~ pre.still[loop.index0] | join(' or ') ~ ' moved here.'] %}
               {% endif %}
               {% set here_names = d.sub_labels | default([], true)
                    | map('string') | select('in', names) | unique | list %}
