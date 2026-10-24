@@ -446,8 +446,12 @@ blueprint:
             and text instead of Frigate's GenAI. It combines the GenAI
             summaries of a journey's cameras (or rewrites the one summary of
             a single-camera journey) into one title, summary and description,
-            in the order things happened and using the recognized names.
-            Only the summaries' text is sent, no images. If it fails, the
+            in the order things happened and using the recognized names. It
+            gets a timeline of where the object was seen and when, so the
+            same people seen in one place after another (two at the back
+            door, then two at the front) come out as the same people moving
+            around, not new ones on every camera. Only text is sent, no
+            images. If it fails, the
             summary Frigate rates as the biggest potential threat is used
             instead. Leave blank to turn off.
           default: ""
@@ -1290,19 +1294,41 @@ actions:
     then:
       - variables:
           ai_response: {}
+          # A timeline of every review in the journey, summarised or not:
+          # the place (the camera's name without "Cam"), when it was seen
+          # there, how that lines up with the places before it (a long review
+          # can span the next camera's, which a start time alone hides), what
+          # Frigate detected and recognized there, and the camera's GenAI
+          # summary
           ai_prompt: >
+            {%- macro place(cam) -%}
+              {%- set name = cam | replace('_', ' ') | replace('-', ' ') | title -%}
+              {{- name | regex_replace('(?i)\\s*\\bcam(era)?\\b', '') | trim or name -}}
+            {%- endmacro -%}
+            {%- macro clock(secs) -%}
+              {%- set s = [secs, 0] | max | round(0) | int -%}
+              {{- '%d:%02d' | format(s // 60, s % 60) -}}
+            {%- endmacro -%}
             {% set names = person_names %}
-            {% set several = summaries | count > 1 %}
-            {% set rules = [
-                 'You are writing one home security notification for an event that several cameras saw, one after another. Below is the AI summary of each camera\'s footage, in the order they happened. Combine them into one account of the whole event, from start to finish.'
+            {% set timeline = members | sort(attribute='start_time') | list %}
+            {% set several = timeline | count > 1 %}
+            {% set one = label | replace('_', ' ') or 'subject' %}
+            {% set many = 'people' if one == 'person' else one ~ 's' %}
+            {% set rules = (
+                 ['You are writing one home security notification for one event, seen by cameras in different places around a property. Below is a timeline of where it was seen, in the order it happened, with times from the start of the event and the AI summary of what was seen in each place. Combine it into one account of the whole event, from start to finish.',
+                  '',
+                  'Rules:',
+                  '- Use only what the timeline says. Do not add details, guess at intentions, or mention cameras, footage, summaries or AI. Places (the driveway, the front door) are fine.',
+                  '- It is one event: the same ' ~ one ~ ' or ' ~ many ~ ' moving from place to place, not new ones in each place, even where a summary only mentions some of them or only what they have with them. Two ' ~ many ~ ' in one place and then two in the next are the same two, not four. Say how many there were as the most seen at once in any one place, never a total across places, and only say one arrived or left if a summary clearly says so.',
+                  '- Anything a summary mentions with them (a dog on a leash, a bag they carry) is part of the same event: tie it to them, not as something separate.',
+                  '- Tell it in the order of the timeline. A place seen "while still at" another overlaps it in time: describe the two together, not as separate visits. Use the times to put things in order and to link places (then, moments later, meanwhile), but do not quote them.']
                    if several else
-                 'You are writing one home security notification for an event a camera saw. Below is the AI summary of its footage. Rewrite it as the notification.',
-                 '',
-                 'Rules:',
-                 '- Use only what the summaries say. Do not add details, guess at intentions, or mention cameras, footage, summaries or AI. Places (the driveway, the front door) are fine.']
-               + (['- Treat it as one continuous event: the same ' ~ (label | replace('_', ' ') or 'subject') ~ ' moving from place to place, unless the summaries clearly describe more than one.']
-                   if several else [])
-               + ['- Face recognition identified: ' ~ names | join(', ') ~ '. Call them by name, even where a summary says "unidentified person".'
+                 ['You are writing one home security notification for an event a camera saw. Below is the AI summary of its footage. Rewrite it as the notification.',
+                  '',
+                  'Rules:',
+                  '- Use only what the summary says. Do not add details, guess at intentions, or mention cameras, footage, summaries or AI. Places (the driveway, the front door) are fine.'])
+               + ['- Face recognition identified: ' ~ names | join(', ') ~ '. Call them by name, even where a summary says "unidentified person"'
+                   ~ (', and anyone else "another person".' if one == 'person' else '.')
                    if names else
                  '- Nobody was recognized. Refer to people generically (e.g. "a person"), never as "unidentified" or "unknown".',
                  '- title: a short headline, under 8 words.',
@@ -1311,26 +1337,69 @@ actions:
             {% if input_ai_instructions | trim %}
               {% set rules = rules + ['', 'Additional context:', input_ai_instructions | trim] %}
             {% endif %}
-            {% set ns = namespace(parts=[rules | join('\n')]) %}
-            {% set first = summaries | map(attribute='start') | min %}
-            {% for s in summaries | sort(attribute='start') %}
-              {% set m = members | selectattr('id', 'eq', s.id) | first | default({}) %}
-              {% set cam = m.camera | default('') | replace('_', ' ') | replace('-', ' ') | title %}
-              {% set secs = (s.start - first) | round(0) | int %}
-              {% set c = namespace(lines=['Camera ' ~ loop.index ~ ': ' ~ cam
-                   ~ ' (' ~ '%d:%02d' | format(secs // 60, secs % 60) ~ ' into the event)']) %}
-              {% for key, heading in [('title', 'Title'), ('shortSummary', 'Summary'), ('scene', 'Details')] %}
-                {% if s.meta[key] | default('', true) is string and s.meta[key] | default('', true) %}
-                  {% set c.lines = c.lines + [heading ~ ': ' ~ s.meta[key]] %}
-                {% endif %}
-              {% endfor %}
-              {% for key, heading in [('observations', 'Observations'), ('other_concerns', 'Concerns')] %}
-                {% set items = s.meta[key] | default([], true) %}
-                {% set items = [items] if items is string else items %}
-                {% if items %}
-                  {% set c.lines = c.lines + [heading ~ ':'] + (items | map('regex_replace', '^', '- ') | list) %}
-                {% endif %}
-              {% endfor %}
+            {% set ns = namespace(parts=[rules | join('\n')], seen=[]) %}
+            {% set first = timeline | map(attribute='start_time') | min %}
+            {% for m in timeline %}
+              {% set start = m.start_time | float(0) %}
+              {% set end = m.end_time | float(now().timestamp()) %}
+              {% set here = place(m.camera | default('')) %}
+              {# Where it still was when it got here, or else where it just
+                 left: the place that ended last, or the one just before this
+                 if it ended about then too. A review ends a moment after the
+                 object leaves, so a few seconds' overlap is just a handoff. #}
+              {% set during = ns.seen | selectattr('end', 'gt', start + 5)
+                   | map(attribute='place') | unique | list %}
+              {% set latest = ns.seen | sort(attribute='end') | last | default(none) %}
+              {% set prev = ns.seen | last | default(none) %}
+              {% set prev = prev if prev and prev.end >= latest.end - 3 else latest %}
+              {% if not prev %}
+                {% set when = '' %}
+              {% elif during %}
+                {% set when = ', while still at ' ~ during | join(' and ') %}
+              {% else %}
+                {% set gap = (start - prev.end) | round(0) | int %}
+                {% set when = ', '
+                     ~ ('right after' if gap <= 2
+                        else (gap ~ ' seconds after') if gap < 90
+                        else ('about ' ~ (gap / 60) | round(0) | int ~ ' minutes after'))
+                     ~ ' leaving ' ~ prev.place %}
+              {% endif %}
+              {% set ns.seen = ns.seen + [{'place': here, 'end': end}] %}
+              {% set c = namespace(lines=[(loop.index ~ '. ' if several else '') ~ here
+                   ~ (' (' ~ clock(start - first) ~ ' to ' ~ clock(end - first) ~ ')'
+                      if m.end_time is not none else ' (from ' ~ clock(start - first) ~ ')')
+                   ~ when]) %}
+              {# What Frigate detected, since a summary can leave out some of
+                 it (only the dog, not the people walking it) #}
+              {% set d = m.data | default({}) %}
+              {% set found = (d.objects | default([], true) + d.audio | default([], true))
+                   | map('replace', '-verified', '') | reject('eq', 'face')
+                   | map('replace', '_', ' ') | unique | list %}
+              {% if found %}
+                {% set c.lines = c.lines + ['Detected here: ' ~ found | join(', ')] %}
+              {% endif %}
+              {% set here_names = d.sub_labels | default([], true)
+                   | map('string') | select('in', names) | unique | list %}
+              {% if several and here_names %}
+                {% set c.lines = c.lines + ['Recognized here: ' ~ here_names | join(', ')] %}
+              {% endif %}
+              {% set s = summaries | selectattr('id', 'eq', m.id) | first | default(none) %}
+              {% if s %}
+                {% for key, heading in [('title', 'Title'), ('shortSummary', 'Summary'), ('scene', 'Details')] %}
+                  {% if s.meta[key] | default('', true) is string and s.meta[key] | default('', true) %}
+                    {% set c.lines = c.lines + [heading ~ ': ' ~ s.meta[key]] %}
+                  {% endif %}
+                {% endfor %}
+                {% for key, heading in [('observations', 'Observations'), ('other_concerns', 'Concerns')] %}
+                  {% set items = s.meta[key] | default([], true) %}
+                  {% set items = [items] if items is string else items %}
+                  {% if items %}
+                    {% set c.lines = c.lines + [heading ~ ':'] + (items | map('regex_replace', '^', '- ') | list) %}
+                  {% endif %}
+                {% endfor %}
+              {% else %}
+                {% set c.lines = c.lines + ['No summary, only seen here.'] %}
+              {% endif %}
               {% set ns.parts = ns.parts + [c.lines | join('\n')] %}
             {% endfor %}
             {{ ns.parts | join('\n\n') }}
