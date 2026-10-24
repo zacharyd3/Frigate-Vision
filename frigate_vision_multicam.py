@@ -24,9 +24,11 @@ Commands (arguments are key=value pairs):
         its review (the start time of each of the review's detections).
         Starts rendering in the background (shell_command stops anything
         that runs longer than 60 seconds) and prints
-        {"status": "started", "genai": "<camera>@<severity> ..."}, where
-        "genai" lists the cameras and review severities Frigate writes GenAI
-        summaries for (left out if Frigate's config can't be read).
+        {"status": "started", "genai": "<camera>@<severity> ...",
+         "watched": "<camera>=<label>,<label> ..."}, where "genai" lists the
+        cameras and review severities Frigate writes GenAI summaries for, and
+        "watched" the objects each camera's reviews always include when they
+        move (both left out if Frigate's config can't be read).
 
     status job=<id>
         Prints {"status": "running" | "done" | "failed", "url": ..., "error": ...}
@@ -453,17 +455,24 @@ def worker(job):
 # ── Commands ────────────────────────────────────────────────────────────────
 
 
-def genai_reviews(url):
-    """The cameras and review severities Frigate writes GenAI summaries for,
-    as "<camera>@alert <camera>@detection ...", or None if Frigate's config
-    can't be read. Frigate 0.17+ sets this per camera in review -> genai:
-    off unless enabled, and then for alerts but not detections by default."""
+def frigate_config(url):
+    """Frigate's config, or None if it can't be read."""
     try:
         with urllib.request.urlopen(f"{url}/api/config", timeout=10) as resp:
             config = json.load(resp)
-        cameras = config.get("cameras") or {}
+        return config if isinstance(config, dict) else None
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+def genai_reviews(config):
+    """The cameras and review severities Frigate writes GenAI summaries for,
+    as "<camera>@alert <camera>@detection ...". Frigate 0.17+ sets this per
+    camera in review -> genai: off unless enabled, and then for alerts but
+    not detections by default."""
+    try:
         found = []
-        for name, camera in cameras.items():
+        for name, camera in (config.get("cameras") or {}).items():
             genai = ((camera or {}).get("review") or {}).get("genai") or {}
             if not NAME_RE.match(name) or not genai.get("enabled"):
                 continue
@@ -472,7 +481,40 @@ def genai_reviews(url):
             if genai.get("detections", False):
                 found.append(f"{name}@detection")
         return " ".join(found)
-    except (urllib.error.URLError, OSError, ValueError, AttributeError):
+    except AttributeError:
+        return None
+
+
+def watched_objects(config):
+    """The objects each camera's reviews always include when they move, as
+    "<camera>=person,car ...": tracked, and an alert or detection anywhere
+    in the frame (no required zones). One of these missing from a review
+    didn't move during it, which the blueprint tells its AI Task."""
+    try:
+        found = []
+        for name, camera in (config.get("cameras") or {}).items():
+            camera = camera or {}
+            track = (camera.get("objects") or {}).get("track") or []
+            review = camera.get("review") or {}
+            alerts = review.get("alerts") or {}
+            detections = review.get("detections") or {}
+            labels = []
+            for label in track:
+                if not isinstance(label, str) or not NAME_RE.match(label):
+                    continue
+                alert = (alerts.get("enabled", True) and not alerts.get("required_zones")
+                         and label in (alerts.get("labels") or []))
+                # No detection labels means every tracked object
+                detection = (detections.get("enabled", True)
+                             and not detections.get("required_zones")
+                             and (not detections.get("labels")
+                                  or label in detections["labels"]))
+                if alert or detection:
+                    labels.append(label)
+            if NAME_RE.match(name) and labels:
+                found.append(f"{name}={','.join(labels)}")
+        return " ".join(found)
+    except (AttributeError, TypeError):
         return None
 
 
@@ -524,7 +566,9 @@ def cmd_render(opts):
     if spec["background"] not in ("blur", "black"):
         fail_usage("invalid background")
 
-    genai = genai_reviews(url)
+    config = frigate_config(url)
+    genai = genai_reviews(config) if config is not None else None
+    watched = watched_objects(config) if config is not None else None
 
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
     spec_path.write_text(json.dumps(spec))
@@ -539,6 +583,8 @@ def cmd_render(opts):
     started = {"status": "started"}
     if genai is not None:
         started["genai"] = genai
+    if watched is not None:
+        started["watched"] = watched
     print(json.dumps(started))
 
 
