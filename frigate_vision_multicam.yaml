@@ -1297,8 +1297,9 @@ actions:
           # A timeline of every review in the journey, summarised or not:
           # the place (the camera's name without "Cam"), when it was seen
           # there, how that lines up with the places before it (a long review
-          # can span the next camera's, which a start time alone hides), who
-          # was recognized there, and the camera's GenAI summary
+          # can span the next camera's, which a start time alone hides), what
+          # Frigate detected and recognized there, and the camera's GenAI
+          # summary
           ai_prompt: >
             {%- macro place(cam) -%}
               {%- set name = cam | replace('_', ' ') | replace('-', ' ') | title -%}
@@ -1318,8 +1319,9 @@ actions:
                   '',
                   'Rules:',
                   '- Use only what the timeline says. Do not add details, guess at intentions, or mention cameras, footage, summaries or AI. Places (the driveway, the front door) are fine.',
-                  '- It is one event: the same ' ~ one ~ ' or ' ~ many ~ ' moving from place to place, not new ones in each place. Two ' ~ many ~ ' in one place and then two in the next are the same two, not four. Say how many there were as the most seen at once in any one place, never a total across places, and only say one arrived or left if a summary clearly says so.',
-                  '- Tell it in the order of the timeline. Places seen "at the same time as" another show the same moment from another angle: describe them together, not as separate visits. Use the times to put things in order and to link places (then, moments later, meanwhile), but do not quote them.']
+                  '- It is one event: the same ' ~ one ~ ' or ' ~ many ~ ' moving from place to place, not new ones in each place, even where a summary only mentions some of them or only what they have with them. Two ' ~ many ~ ' in one place and then two in the next are the same two, not four. Say how many there were as the most seen at once in any one place, never a total across places, and only say one arrived or left if a summary clearly says so.',
+                  '- Anything a summary mentions with them (a dog on a leash, a bag they carry) is part of the same event: tie it to them, not as something separate.',
+                  '- Tell it in the order of the timeline. A place seen "while still at" another overlaps it in time: describe the two together, not as separate visits. Use the times to put things in order and to link places (then, moments later, meanwhile), but do not quote them.']
                    if several else
                  ['You are writing one home security notification for an event a camera saw. Below is the AI summary of its footage. Rewrite it as the notification.',
                   '',
@@ -1341,14 +1343,19 @@ actions:
               {% set start = m.start_time | float(0) %}
               {% set end = m.end_time | float(now().timestamp()) %}
               {% set here = place(m.camera | default('')) %}
-              {# Where it still was when it got here, or else where it last left #}
-              {% set during = ns.seen | selectattr('end', 'gt', start + 1)
+              {# Where it still was when it got here, or else where it just
+                 left: the place that ended last, or the one just before this
+                 if it ended about then too. A review ends a moment after the
+                 object leaves, so a few seconds' overlap is just a handoff. #}
+              {% set during = ns.seen | selectattr('end', 'gt', start + 5)
                    | map(attribute='place') | unique | list %}
-              {% set prev = ns.seen | sort(attribute='end') | last | default(none) %}
+              {% set latest = ns.seen | sort(attribute='end') | last | default(none) %}
+              {% set prev = ns.seen | last | default(none) %}
+              {% set prev = prev if prev and prev.end >= latest.end - 3 else latest %}
               {% if not prev %}
                 {% set when = '' %}
               {% elif during %}
-                {% set when = ', at the same time as ' ~ during | join(' and ') %}
+                {% set when = ', while still at ' ~ during | join(' and ') %}
               {% else %}
                 {% set gap = (start - prev.end) | round(0) | int %}
                 {% set when = ', '
@@ -1362,7 +1369,16 @@ actions:
                    ~ (' (' ~ clock(start - first) ~ ' to ' ~ clock(end - first) ~ ')'
                       if m.end_time is not none else ' (from ' ~ clock(start - first) ~ ')')
                    ~ when]) %}
-              {% set here_names = (m.data | default({})).sub_labels | default([], true)
+              {# What Frigate detected, since a summary can leave out some of
+                 it (only the dog, not the people walking it) #}
+              {% set d = m.data | default({}) %}
+              {% set found = (d.objects | default([], true) + d.audio | default([], true))
+                   | map('replace', '-verified', '') | reject('eq', 'face')
+                   | map('replace', '_', ' ') | unique | list %}
+              {% if found %}
+                {% set c.lines = c.lines + ['Detected here: ' ~ found | join(', ')] %}
+              {% endif %}
+              {% set here_names = d.sub_labels | default([], true)
                    | map('string') | select('in', names) | unique | list %}
               {% if several and here_names %}
                 {% set c.lines = c.lines + ['Recognized here: ' ~ here_names | join(', ')] %}
